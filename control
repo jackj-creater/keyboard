@@ -1,0 +1,9 @@
+Package: com.keyboard.spotlightcandidatefix
+Name: SpotlightCandidateFix
+Version: 0.1.0
+Architecture: iphoneos-arm64e
+Description: Adjusts the Spotlight keyboard candidate bar and expanded candidate background on iOS 17.
+Maintainer: Keyboard Project
+Author: Keyboard Project
+Section: Tweaks
+Depends: firmware (>= 17.0), mobilesubstrate
