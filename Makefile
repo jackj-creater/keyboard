@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = SpotlightCandidateFix
 SpotlightCandidateFix_FILES = Tweak.xm
 SpotlightCandidateFix_CFLAGS = -fobjc-arc
-SpotlightCandidateFix_FRAMEWORKS = UIKit
+SpotlightCandidateFix_FRAMEWORKS = UIKit QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

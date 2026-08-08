@@ -1,0 +1,70 @@
+name: Build RootHide deb
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - Tweak.xm
+      - Makefile
+      - control
+      - SpotlightCandidateFix.plist
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roothide-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build SpotlightCandidateFix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      THEOS: ${{ github.workspace }}/.theos
+      THEOS_PACKAGE_SCHEME: roothide
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Install RootHide Theos
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/roothide/theos/master/bin/install-theos)"
+
+      - name: Build RootHide package
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean package FINALPACKAGE=1 messages=yes
+
+      - name: Verify package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages_found < <(find packages -maxdepth 1 -type f -name '*.deb' -print)
+          if [[ ${#packages_found[@]} -eq 0 ]]; then
+            echo "No deb package was produced."
+            exit 1
+          fi
+          for package in "${packages_found[@]}"; do
+            dpkg-deb --info "$package"
+          done
+          sha256sum "${packages_found[@]}" > packages/SHA256SUMS.txt
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v7
+        with:
+          name: SpotlightCandidateFix-0.2-${{ github.run_number }}
+          path: |
+            packages/*.deb
+            packages/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
