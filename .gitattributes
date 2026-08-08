@@ -1,0 +1,6 @@
+* text=auto eol=lf
+control text eol=lf
+*.xm text eol=lf
+*.plist text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
