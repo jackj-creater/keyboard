@@ -1,4 +1,4 @@
-# SpotlightCandidateFix 0.1
+# SpotlightCandidateFix 0.2
 
 适用环境：
 
@@ -10,7 +10,7 @@
 
 ## 这个版本做什么
 
-这是第一版“修复 + 探测”版本：
+这是第二版“修复 + 探测”版本：
 
 1. 只检查 Spotlight/Search 场景中的视图。
 2. 只处理类名或上层视图包含以下特征的区域：
@@ -20,7 +20,7 @@
    - Keyboard
    - TextInput
    - Expanded
-3. 默认将深黑背景改为 30% 透明度的黑色。
+3. 默认清除候选栏、展开按钮和展开面板的深黑背景。
 4. 会输出 `[SCF]` 日志，方便第二版精确定位 iOS 17.1.1 的实际私有类名。
 
 它不会主动修改微信、Safari、设置等普通 App 的键盘，因为过滤文件只加载到 SpringBoard。
@@ -30,12 +30,12 @@
 打开 `Tweak.xm`，在最顶部找到：
 
 ```objc
-static const NSInteger kSCFBackgroundMode = 1;
+static const NSInteger kSCFBackgroundMode = 0;
 ```
 
 可选值：
 
-- `0`：完全透明
+- `0`：完全透明（默认）
 - `1`：半透明黑
 - `2`：纯黑
 

@@ -94,9 +94,6 @@ static NSArray<UIWindow *> *SCFApplicationWindows(void) {
         }
     }
 
-    for (UIWindow *window in application.windows) {
-        if (![windows containsObject:window]) [windows addObject:window];
-    }
     return windows;
 }
 
