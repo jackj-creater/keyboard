@@ -1,5 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
+#include <ctype.h>
+#include <string.h>
 
 #pragma mark - User-adjustable constants
 
@@ -18,44 +21,60 @@ static id gSCFEndEditingObserver = nil;
 
 #pragma mark - Class and context helpers
 
-static BOOL SCFStringContainsAny(NSString *value, NSArray<NSString *> *needles) {
-    if (value.length == 0) return NO;
+static BOOL SCFCStringContainsInsensitive(const char *value, const char *needle) {
+    if (!value || !needle || !*needle) return NO;
 
-    NSString *lower = value.lowercaseString;
-    for (NSString *needle in needles) {
-        if ([lower containsString:needle.lowercaseString]) return YES;
+    size_t needleLength = strlen(needle);
+    for (const char *start = value; *start; start++) {
+        size_t index = 0;
+        while (index < needleLength && start[index] &&
+               tolower((unsigned char)start[index]) ==
+               tolower((unsigned char)needle[index])) {
+            index++;
+        }
+        if (index == needleLength) return YES;
     }
     return NO;
 }
 
-static NSString *SCFClassName(id object) {
-    return object ? (NSStringFromClass([object class]) ?: @"") : @"";
+static const char *SCFClassName(id object) {
+    if (!object) return "";
+    Class cls = object_getClass(object);
+    return cls ? class_getName(cls) : "";
 }
 
-static NSArray<NSString *> *SCFSearchKeywords(void) {
-    static NSArray<NSString *> *keywords;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        keywords = @[@"spotlight", @"search", @"searchui"];
-    });
-    return keywords;
+static BOOL SCFClassNameContainsAny(id object,
+                                    const char *const *needles,
+                                    size_t needleCount) {
+    const char *name = SCFClassName(object);
+    for (size_t index = 0; index < needleCount; index++) {
+        if (SCFCStringContainsInsensitive(name, needles[index])) return YES;
+    }
+    return NO;
 }
+
+static const char *const kSCFSearchKeywords[] = {
+    "spotlight", "search", "searchui"
+};
 
 static BOOL SCFViewOrAncestorMatches(UIView *view,
-                                     NSArray<NSString *> *keywords,
+                                     const char *const *keywords,
+                                     size_t keywordCount,
                                      NSUInteger maxDepth) {
     UIView *current = view;
     for (NSUInteger depth = 0; current && depth <= maxDepth; depth++) {
-        if (SCFStringContainsAny(SCFClassName(current), keywords)) return YES;
+        if (SCFClassNameContainsAny(current, keywords, keywordCount)) return YES;
         current = current.superview;
     }
     return NO;
 }
 
-static BOOL SCFControllerChainMatches(UIView *view, NSArray<NSString *> *keywords) {
+static BOOL SCFControllerChainMatches(UIView *view,
+                                      const char *const *keywords,
+                                      size_t keywordCount) {
     UIResponder *responder = view;
     for (NSUInteger depth = 0; responder && depth < 24; depth++) {
-        if (SCFStringContainsAny(SCFClassName(responder), keywords)) return YES;
+        if (SCFClassNameContainsAny(responder, keywords, keywordCount)) return YES;
         responder = responder.nextResponder;
     }
     return NO;
@@ -63,73 +82,36 @@ static BOOL SCFControllerChainMatches(UIView *view, NSArray<NSString *> *keyword
 
 static BOOL SCFViewBelongsToSpotlightSearch(UIView *view) {
     if (!view) return NO;
-    return SCFViewOrAncestorMatches(view, SCFSearchKeywords(), 20) ||
-           SCFControllerChainMatches(view, SCFSearchKeywords());
-}
-
-static UIView *SCFFindFirstResponder(UIView *view, NSUInteger depth) {
-    if (!view || depth > 30) return nil;
-    if (view.isFirstResponder) return view;
-
-    for (UIView *subview in view.subviews) {
-        UIView *found = SCFFindFirstResponder(subview, depth + 1);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static NSArray<UIWindow *> *SCFApplicationWindows(void) {
-    UIApplication *application = UIApplication.sharedApplication;
-    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
-
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (![windows containsObject:window]) [windows addObject:window];
-        }
-    }
-
-    return windows;
+    const size_t count = sizeof(kSCFSearchKeywords) / sizeof(kSCFSearchKeywords[0]);
+    return SCFViewOrAncestorMatches(view, kSCFSearchKeywords, count, 20) ||
+           SCFControllerChainMatches(view, kSCFSearchKeywords, count);
 }
 
 static BOOL SCFSpotlightSearchIsEditing(void) {
-    if (gSCFSpotlightResponder && gSCFSpotlightResponder.isFirstResponder) return YES;
-
-    static CFTimeInterval lastCheck = 0.0;
-    static BOOL cachedResult = NO;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - lastCheck < 0.20) return cachedResult;
-    lastCheck = now;
-
-    cachedResult = NO;
-    for (UIWindow *window in SCFApplicationWindows()) {
-        if (window.hidden || window.alpha < 0.01) continue;
-        UIView *firstResponder = SCFFindFirstResponder(window, 0);
-        if (SCFViewBelongsToSpotlightSearch(firstResponder)) {
-            gSCFSpotlightResponder = firstResponder;
-            cachedResult = YES;
-            break;
-        }
-    }
-    return cachedResult;
+    UIView *responder = gSCFSpotlightResponder;
+    return responder && responder.isFirstResponder;
 }
 
 static BOOL SCFViewIsCandidateSurface(UIView *view) {
-    NSString *name = SCFClassName(view).lowercaseString;
-    if (name.length == 0) return NO;
+    const char *name = SCFClassName(view);
+    if (!name || !*name) return NO;
 
-    BOOL candidateClass = [name containsString:@"candidate"] ||
-                          [name containsString:@"prediction"] ||
-                          [name containsString:@"completion"];
+    BOOL candidateClass = SCFCStringContainsInsensitive(name, "candidate") ||
+                          SCFCStringContainsInsensitive(name, "prediction") ||
+                          SCFCStringContainsInsensitive(name, "completion");
     if (!candidateClass) return NO;
 
     // Cells own selection/highlight visuals and are intentionally left alone.
-    if ([name containsString:@"cell"] || [name containsString:@"label"]) return NO;
+    if (SCFCStringContainsInsensitive(name, "cell") ||
+        SCFCStringContainsInsensitive(name, "label")) return NO;
 
-    return SCFStringContainsAny(name, @[
-        @"bar", @"grid", @"overlay", @"toggle", @"arrow",
-        @"inline", @"header", @"background", @"view"
-    ]);
+    static const char *const surfaceKeywords[] = {
+        "bar", "grid", "overlay", "toggle", "arrow",
+        "inline", "header", "background", "view"
+    };
+    return SCFClassNameContainsAny(view,
+                                   surfaceKeywords,
+                                   sizeof(surfaceKeywords) / sizeof(surfaceKeywords[0]));
 }
 
 static BOOL SCFFrameCanBeCandidateSurface(UIView *view) {
@@ -174,10 +156,14 @@ static UIColor *SCFTargetColor(void) {
 }
 
 static BOOL SCFClassLooksLikeBackground(UIView *view) {
-    return SCFStringContainsAny(SCFClassName(view), @[
-        @"background", @"backdrop", @"material", @"platter",
-        @"blur", @"effect", @"overlay"
-    ]);
+    static const char *const backgroundKeywords[] = {
+        "background", "backdrop", "material", "platter",
+        "blur", "effect", "overlay"
+    };
+    return SCFClassNameContainsAny(
+        view,
+        backgroundKeywords,
+        sizeof(backgroundKeywords) / sizeof(backgroundKeywords[0]));
 }
 
 static BOOL SCFColorsEqual(UIColor *first, UIColor *second, UITraitCollection *traits) {
@@ -221,10 +207,9 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
                                          BOOL insideCell) {
     if (!view || depth > 18) return 0;
 
-    NSString *className = SCFClassName(view);
     BOOL isCell = [view isKindOfClass:UICollectionViewCell.class] ||
                   [view isKindOfClass:UITableViewCell.class] ||
-                  [className.lowercaseString containsString:@"cell"];
+                  SCFCStringContainsInsensitive(SCFClassName(view), "cell");
     BOOL isBackground = SCFClassLooksLikeBackground(view);
     BOOL isSurface = SCFViewIsCandidateSurface(view);
     BOOL preserveCellContent = (insideCell || isCell) && !isBackground;
@@ -279,6 +264,7 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 
 - (void)didMoveToWindow {
     %orig;
+    if (!SCFSpotlightSearchIsEditing()) return;
     if (!self.window || !SCFViewIsCandidateSurface(self)) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -288,26 +274,29 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
+    if (!SCFSpotlightSearchIsEditing()) return;
     if (SCFViewIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
 }
 
 %end
 
 %ctor {
-    @autoreleasepool {
-        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-        gSCFBeginEditingObserver = [center addObserverForName:UITextFieldTextDidBeginEditingNotification
-                                                       object:nil
-                                                        queue:NSOperationQueue.mainQueue
-                                                   usingBlock:^(NSNotification *note) {
-            UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
-            if (SCFViewBelongsToSpotlightSearch(view)) gSCFSpotlightResponder = view;
-        }];
-        gSCFEndEditingObserver = [center addObserverForName:UITextFieldTextDidEndEditingNotification
-                                                     object:nil
-                                                      queue:NSOperationQueue.mainQueue
-                                                 usingBlock:^(NSNotification *note) {
-            if (note.object == gSCFSpotlightResponder) gSCFSpotlightResponder = nil;
-        }];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+            gSCFBeginEditingObserver = [center addObserverForName:UITextFieldTextDidBeginEditingNotification
+                                                           object:nil
+                                                            queue:NSOperationQueue.mainQueue
+                                                       usingBlock:^(NSNotification *note) {
+                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
+                if (SCFViewBelongsToSpotlightSearch(view)) gSCFSpotlightResponder = view;
+            }];
+            gSCFEndEditingObserver = [center addObserverForName:UITextFieldTextDidEndEditingNotification
+                                                         object:nil
+                                                          queue:NSOperationQueue.mainQueue
+                                                     usingBlock:^(NSNotification *note) {
+                if (note.object == gSCFSpotlightResponder) gSCFSpotlightResponder = nil;
+            }];
+        }
+    });
 }

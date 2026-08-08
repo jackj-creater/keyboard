@@ -1,4 +1,4 @@
-# SpotlightCandidateFix 0.2.1
+# SpotlightCandidateFix 0.2.2
 
 适用环境：
 
@@ -10,7 +10,7 @@
 
 ## 这个版本做什么
 
-这是 0.2 安全模式崩溃的修复版本：
+这是 SpringBoard 启动安全模式崩溃的第二次修复版本：
 
 1. 只检查 Spotlight/Search 场景中的视图。
 2. 只处理类名或上层视图包含以下特征的区域：
@@ -21,7 +21,8 @@
    - TextInput
    - Expanded
 3. 默认清除候选栏、展开按钮和展开面板的深黑背景。
-4. 移除插件加载阶段的 `NSLog`，避免 SpringBoard 在 dyld 初始化期间崩溃。
+4. Spotlight 未激活时，`UIView` Hook 会立即返回，不再扫描 SpringBoard 启动视图。
+5. 类名匹配改用 C 字符串，避开崩溃日志中的 `NSString containsString:` 路径。
 
 它不会主动修改微信、Safari、设置等普通 App 的键盘，因为过滤文件只加载到 SpringBoard。
 
