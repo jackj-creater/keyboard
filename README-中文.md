@@ -1,4 +1,4 @@
-# SpotlightCandidateFix 0.2
+# SpotlightCandidateFix 0.2.1
 
 适用环境：
 
@@ -10,7 +10,7 @@
 
 ## 这个版本做什么
 
-这是第二版“修复 + 探测”版本：
+这是 0.2 安全模式崩溃的修复版本：
 
 1. 只检查 Spotlight/Search 场景中的视图。
 2. 只处理类名或上层视图包含以下特征的区域：
@@ -21,7 +21,7 @@
    - TextInput
    - Expanded
 3. 默认清除候选栏、展开按钮和展开面板的深黑背景。
-4. 会输出 `[SCF]` 日志，方便第二版精确定位 iOS 17.1.1 的实际私有类名。
+4. 移除插件加载阶段的 `NSLog`，避免 SpringBoard 在 dyld 初始化期间崩溃。
 
 它不会主动修改微信、Safari、设置等普通 App 的键盘，因为过滤文件只加载到 SpringBoard。
 
@@ -116,22 +116,6 @@ sbreload
 4. 点击候选词栏右侧的向下箭头。
 5. 查看黑色区域是否变成半透明黑。
 
-## 查看日志
-
-先尝试：
-
-```sh
-log stream --level debug --predicate 'eventMessage contains "[SCF]"'
-```
-
-如果 NewTerm 中没有输出，可尝试：
-
-```sh
-log show --last 5m --predicate 'eventMessage contains "[SCF]"'
-```
-
-将包含 `[SCF] matched class=...` 的日志复制出来，用于制作更精确的第二版。
-
 ## 卸载或异常恢复
 
 若出现 SpringBoard 重启、界面异常或安全模式：
@@ -154,4 +138,4 @@ iOS 17.1.1 的 Spotlight 和键盘候选区域使用私有 UIKit/TextInputUI 类
 - 只修改右侧箭头，未修改展开面板；
 - 被系统材质在后续布局中重新覆盖。
 
-这些情况需要根据 `[SCF]` 日志制作第二版。
+这些情况需要结合设备截图和崩溃日志继续调整。

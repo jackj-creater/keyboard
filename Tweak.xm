@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <objc/runtime.h>
 
 #pragma mark - User-adjustable constants
 
@@ -13,10 +12,6 @@ static const NSInteger kSCFBackgroundMode = 0;
 // Suggested range: 0.18 - 0.45
 static const CGFloat kSCFBlackAlpha = 0.30;
 
-// Keep this enabled until the iOS 17.1.1 class names are confirmed on-device.
-static const BOOL kSCFEnableLogging = YES;
-
-static const void *kSCFLoggedSurfaceKey = &kSCFLoggedSurfaceKey;
 static __weak UIView *gSCFSpotlightResponder = nil;
 static id gSCFBeginEditingObserver = nil;
 static id gSCFEndEditingObserver = nil;
@@ -275,20 +270,7 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFFrameCanBeCandidateSurface(view)) return;
     if (!SCFSpotlightSearchIsEditing()) return;
 
-    NSUInteger changes = SCFRepairCandidateTree(view, SCFTargetColor(), 0, NO);
-    if (changes == 0 || !kSCFEnableLogging) return;
-
-    if (![objc_getAssociatedObject(view, kSCFLoggedSurfaceKey) boolValue]) {
-        NSLog(@"[SCF] repaired surface=%@ frame=%@ changes=%lu window=%@",
-              SCFClassName(view),
-              NSStringFromCGRect(view.frame),
-              (unsigned long)changes,
-              SCFClassName(view.window));
-        objc_setAssociatedObject(view,
-                                 kSCFLoggedSurfaceKey,
-                                 @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    SCFRepairCandidateTree(view, SCFTargetColor(), 0, NO);
 }
 
 #pragma mark - Hook and Spotlight editing state
@@ -327,9 +309,5 @@ static void SCFApplyToCandidateSurface(UIView *view) {
                                                  usingBlock:^(NSNotification *note) {
             if (note.object == gSCFSpotlightResponder) gSCFSpotlightResponder = nil;
         }];
-
-        if (kSCFEnableLogging) {
-            NSLog(@"[SCF] 0.2 loaded in process=%@", NSProcessInfo.processInfo.processName);
-        }
     }
 }
