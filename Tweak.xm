@@ -4,18 +4,27 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <notify.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/syslimits.h>
 #include <time.h>
 #include <unistd.h>
 
-static const char *const kSCFSpotlightStatePath =
-    "/var/mobile/Media/SpotlightCandidateFix/spotlight-active";
+static const char *const kSCFSpotlightStateName =
+    "com.keyboard.spotlightcandidatefix.spotlight-visible";
 static BOOL gSCFIsSpotlight = NO;
 static BOOL gSCFIsInputUI = NO;
 static CFTimeInterval gSCFLastStateWrite = 0.0;
+static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
+
+static void SCFEnsureStateToken(void) {
+    if (gSCFStateToken != NOTIFY_TOKEN_INVALID) return;
+    int token = NOTIFY_TOKEN_INVALID;
+    if (notify_register_check(kSCFSpotlightStateName, &token) == NOTIFY_STATUS_OK) {
+        gSCFStateToken = token;
+    }
+}
 
 static void SCFMarkSpotlightVisible(void) {
     if (!gSCFIsSpotlight) return;
@@ -23,19 +32,19 @@ static void SCFMarkSpotlightVisible(void) {
     if (now - gSCFLastStateWrite < 0.5) return;
     gSCFLastStateWrite = now;
 
-    mkdir("/var/mobile/Media/SpotlightCandidateFix", 0755);
-    int fd = open(kSCFSpotlightStatePath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return;
-    static const char value[] = "1\n";
-    write(fd, value, sizeof(value) - 1);
-    close(fd);
+    SCFEnsureStateToken();
+    if (gSCFStateToken == NOTIFY_TOKEN_INVALID) return;
+    notify_set_state(gSCFStateToken, (uint64_t)time(NULL));
+    notify_post(kSCFSpotlightStateName);
 }
 
 static BOOL SCFSpotlightWasRecentlyVisible(void) {
-    struct stat info;
-    if (stat(kSCFSpotlightStatePath, &info) != 0) return NO;
+    SCFEnsureStateToken();
+    if (gSCFStateToken == NOTIFY_TOKEN_INVALID) return NO;
+    uint64_t state = 0;
+    if (notify_get_state(gSCFStateToken, &state) != NOTIFY_STATUS_OK || state == 0) return NO;
     time_t now = time(NULL);
-    return now >= info.st_mtime && now - info.st_mtime <= 3;
+    return now >= (time_t)state && now - (time_t)state <= 3;
 }
 
 static BOOL SCFContainsInsensitive(const char *text, const char *needle) {
