@@ -1,5 +1,4 @@
 #import <UIKit/UIKit.h>
-#import <CoreFoundation/CoreFoundation.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -11,10 +10,6 @@ static const char *kSCFSpotlightStateDirectory =
     "/var/mobile/Media/SpotlightCandidateFix";
 static const char *kSCFSpotlightStatePath =
     "/var/mobile/Media/SpotlightCandidateFix/spotlight-active";
-static CFStringRef kSCFSpotlightDidOpenNotification =
-    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-open");
-static CFStringRef kSCFSpotlightDidCloseNotification =
-    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-close");
 static BOOL gSCFBackdropVisible = NO;
 static BOOL gSCFControllerVisible = NO;
 static BOOL gSCFLastPublishedState = NO;
@@ -30,10 +25,6 @@ static void SCFSetSpotlightActive(BOOL active) {
         close(fd);
     }
 
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        active ? kSCFSpotlightDidOpenNotification : kSCFSpotlightDidCloseNotification,
-        NULL, NULL, true);
 }
 
 static void SCFUpdateSpotlightState(void) {

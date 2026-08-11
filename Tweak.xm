@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -23,16 +22,13 @@ static const CGFloat kSCFBlackAlpha = 0.30;
 // The keyboard UI is hosted by the shared UIKit keyboard process.  A class
 // name such as UIKBBackdropView is therefore not enough to identify
 // Spotlight: the exact same classes are used by every application keyboard.
-// The SpringBoard companion writes this state while Spotlight is visible and
-// broadcasts the change with Darwin notifications.
+// The SpringBoard companion writes this state while Spotlight is visible.
+// The keyboard process polls the one-byte file briefly and never registers a
+// cross-process notification observer during launch.
 static const char *kSCFSpotlightStatePath =
     "/var/mobile/Media/SpotlightCandidateFix/spotlight-active";
-static CFStringRef kSCFSpotlightDidOpenNotification =
-    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-open");
-static CFStringRef kSCFSpotlightDidCloseNotification =
-    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-close");
-static volatile BOOL gSCFSpotlightActive = NO;
-static volatile BOOL gSCFSpotlightStateInitialized = NO;
+static CFTimeInterval gSCFSpotlightStateCheckTime = 0.0;
+static BOOL gSCFSpotlightActive = NO;
 
 static BOOL SCFReadSpotlightState(void) {
     int fd = open(kSCFSpotlightStatePath, O_RDONLY);
@@ -44,41 +40,13 @@ static BOOL SCFReadSpotlightState(void) {
     return count == 1 && value == '1';
 }
 
-static void SCFSpotlightStateChanged(CFNotificationCenterRef center,
-                                     void *observer,
-                                     CFStringRef name,
-                                     const void *object,
-                                     CFDictionaryRef userInfo) {
-    (void)center;
-    (void)observer;
-    (void)object;
-    (void)userInfo;
-    if (name && (name == kSCFSpotlightDidOpenNotification ||
-        CFStringCompare(name, kSCFSpotlightDidOpenNotification, 0) == kCFCompareEqualTo)) {
-        gSCFSpotlightActive = YES;
-    } else if (name && (name == kSCFSpotlightDidCloseNotification ||
-               CFStringCompare(name, kSCFSpotlightDidCloseNotification, 0) == kCFCompareEqualTo)) {
-        gSCFSpotlightActive = NO;
-    }
-    gSCFSpotlightStateInitialized = YES;
-}
-
 static BOOL SCFSpotlightIsActive(void) {
-    if (!gSCFSpotlightStateInitialized) {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gSCFSpotlightStateCheckTime > 0.10) {
         gSCFSpotlightActive = SCFReadSpotlightState();
-        gSCFSpotlightStateInitialized = YES;
+        gSCFSpotlightStateCheckTime = now;
     }
     return gSCFSpotlightActive;
-}
-
-static void SCFInstallSpotlightStateObserver(void) {
-    CFNotificationCenterRef center = CFNotificationCenterGetDarwinNotifyCenter();
-    CFNotificationCenterAddObserver(center, NULL, SCFSpotlightStateChanged,
-                                    kSCFSpotlightDidOpenNotification, NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately);
-    CFNotificationCenterAddObserver(center, NULL, SCFSpotlightStateChanged,
-                                    kSCFSpotlightDidCloseNotification, NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately);
 }
 
 static BOOL SCFCStringContainsInsensitive(const char *value, const char *needle) {
@@ -357,9 +325,3 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 %end
-
-%ctor {
-    @autoreleasepool {
-        SCFInstallSpotlightStateObserver();
-    }
-}
