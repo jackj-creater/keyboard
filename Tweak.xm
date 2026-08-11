@@ -12,6 +12,7 @@
 static int gSCFTraceFD = -1;
 static const void *gSCFSeen[1024];
 static size_t gSCFSeenCount = 0;
+static const char *const kSCFTracePath = "/tmp/SpotlightCandidateFix-inputui-trace.txt";
 
 static BOOL SCFContains(const char *value, const char *needle) {
     if (!value || !needle || !*needle) return NO;
@@ -151,8 +152,9 @@ static void SCFScheduleRepeatedTrace(NSUInteger remaining) {
 %end
 
 %ctor {
-    mkdir("/var/mobile/Media/SpotlightCandidateFix", 0755);
-    gSCFTraceFD = open("/var/mobile/Media/SpotlightCandidateFix/inputui-trace.txt",
+    // InputUI is sandboxed and may not write under /var/mobile/Media.
+    // /tmp is writable by the system keyboard service and is easy to inspect in Filza.
+    gSCFTraceFD = open(kSCFTracePath,
                        O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
     if (gSCFTraceFD >= 0) {
         SCFWrite("PROCESS:%s BUNDLE:%s\n",
