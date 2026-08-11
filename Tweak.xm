@@ -60,7 +60,23 @@ static void SCFTraceView(UIView *view) {
     if (gSCFTraceFD < 0 || !view || !view.window) return;
 
     const char *name = SCFClassName(view);
-    if (!SCFIsKeyboardRelatedClass(name) || SCFAlreadyLogged(name)) return;
+    CGRect frame = view.frame;
+    if (frame.size.width <= 1.0 || frame.size.height <= 1.0) return;
+
+    BOOL hasKeyboardAncestor = NO;
+    UIView *candidateAncestor = view.superview;
+    for (NSUInteger depth = 0; candidateAncestor && depth < 14; depth++, candidateAncestor = candidateAncestor.superview) {
+        const char *ancestorName = SCFClassName(candidateAncestor);
+        if (SCFContainsInsensitive(ancestorName, "keyboard") ||
+            SCFContainsInsensitive(ancestorName, "inputset") ||
+            SCFContainsInsensitive(ancestorName, "materialview")) {
+            hasKeyboardAncestor = YES;
+            break;
+        }
+    }
+    if (!SCFIsKeyboardRelatedClass(name) && !hasKeyboardAncestor &&
+        !SCFContainsInsensitive(name, "materialview")) return;
+    if (SCFAlreadyLogged(name)) return;
 
     char ancestors[600] = {0};
     size_t offset = 0;
@@ -73,12 +89,15 @@ static void SCFTraceView(UIView *view) {
         offset += (size_t)written;
     }
 
-    CGRect frame = view.frame;
-    char line[1100];
+    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
+    BOOL hasRGB = [view.backgroundColor getRed:&red green:&green blue:&blue alpha:&alpha];
+    char line[1300];
     int length = snprintf(line, sizeof(line),
-                          "CLASS: %s\nFRAME: %.1f,%.1f %.1fx%.1f\nANCESTORS: %s\n\n",
+                          "CLASS: %s\nFRAME: %.1f,%.1f %.1fx%.1f\nBG: %s %.2f,%.2f,%.2f,%.2f\nOPAQUE: %s\nANCESTORS: %s\n\n",
                           name, frame.origin.x, frame.origin.y,
-                          frame.size.width, frame.size.height, ancestors);
+                          frame.size.width, frame.size.height,
+                          hasRGB ? "rgb" : "other", red, green, blue, alpha,
+                          view.opaque ? "YES" : "NO", ancestors);
     if (length > 0) write(gSCFTraceFD, line, (size_t)length);
 }
 

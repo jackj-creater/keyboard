@@ -1,6 +1,6 @@
 Package: com.keyboard.spotlightcandidatefix
 Name: SpotlightCandidateFix Diagnostic
-Version: 0.2.6
+Version: 0.2.7
 Architecture: iphoneos-arm64e
 Description: Diagnostic build for Spotlight keyboard candidate view hierarchy on iOS 17.
 Maintainer: Keyboard Project
