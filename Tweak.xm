@@ -91,15 +91,6 @@ static void SCFTraceView(UIView *view) {
     SCFWrite("--- END TRACE ---\n");
 }
 
-static BOOL SCFTreeContainsRelevant(UIView *view, NSUInteger depth) {
-    if (!view || depth > 18) return NO;
-    if (SCFRelevant(view)) return YES;
-    for (UIView *subview in view.subviews) {
-        if (SCFTreeContainsRelevant(subview, depth + 1)) return YES;
-    }
-    return NO;
-}
-
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static void SCFTraceExistingWindows(void) {
@@ -116,17 +107,32 @@ static void SCFTraceExistingWindows(void) {
     }
     SCFWrite("WINDOW_COUNT:%lu KEY:%s\n", (unsigned long)windows.count,
              SCFName(application.keyWindow));
+    gSCFSeenCount = 0;
     for (UIWindow *window in windows) {
+        const char *name = SCFName(window);
+        BOOL keyboardWindow = SCFContains(name, "UITextEffectsWindow") ||
+                              SCFContains(name, "RemoteKeyboard") ||
+                              SCFContains(name, "InputSet");
+        if (!keyboardWindow) continue;
         SCFWrite("WINDOW:%s HIDDEN:%s ALPHA:%.2f SUBVIEWS:%lu\n",
-                 SCFName(window), window.hidden ? "YES" : "NO", window.alpha,
+                 name, window.hidden ? "YES" : "NO", window.alpha,
                  (unsigned long)window.subviews.count);
-        if (!window.hidden && window.alpha > 0.01 && SCFTreeContainsRelevant(window, 0)) {
-            SCFWrite("=== EXISTING WINDOW %s FRAME:%.1f,%.1f %.1fx%.1f ===\n",
-                     SCFName(window), window.frame.origin.x, window.frame.origin.y,
+        if (!window.hidden && window.alpha > 0.01) {
+            SCFWrite("=== KEYBOARD WINDOW FRAME:%.1f,%.1f %.1fx%.1f ===\n",
+                     window.frame.origin.x, window.frame.origin.y,
                      window.frame.size.width, window.frame.size.height);
             SCFTraceTree(window, 0);
         }
     }
+}
+
+static void SCFScheduleRepeatedTrace(NSUInteger remaining) {
+    if (remaining == 0) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        SCFTraceExistingWindows();
+        SCFScheduleRepeatedTrace(remaining - 1);
+    });
 }
 #pragma clang diagnostic pop
 
@@ -152,13 +158,6 @@ static void SCFTraceExistingWindows(void) {
         SCFWrite("PROCESS:%s BUNDLE:%s\n",
                  NSProcessInfo.processInfo.processName.UTF8String ?: "",
                  NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            SCFTraceExistingWindows();
-        });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            SCFTraceExistingWindows();
-        });
+        SCFScheduleRepeatedTrace(60);
     }
 }
