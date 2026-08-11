@@ -152,6 +152,11 @@ static void SCFScheduleRepeatedTrace(NSUInteger remaining) {
 %end
 
 %ctor {
+    // UIKit is shared by many processes. Only the system keyboard renderer may
+    // execute this diagnostic; every other injected process exits immediately.
+    const char *processName = NSProcessInfo.processInfo.processName.UTF8String;
+    if (!processName || strcmp(processName, "InputUI") != 0) return;
+
     // InputUI is sandboxed and may not write under /var/mobile/Media.
     // /tmp is writable by the system keyboard service and is easy to inspect in Filza.
     gSCFTraceFD = open(kSCFTracePath,

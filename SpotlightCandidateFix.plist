@@ -1,7 +1,7 @@
 {
     Filter = {
-        Executables = (
-            "InputUI"
+        Bundles = (
+            "com.apple.UIKit"
         );
     };
 }
