@@ -1,0 +1,11 @@
+这是诊断版，不会修改键盘颜色。
+
+上传方法：
+1. 将此目录内的 Tweak.xm、control 覆盖到 GitHub 仓库根目录同名文件。
+2. 等待 GitHub Actions 构建完成，安装生成的 deb，并重启 SpringBoard。
+3. 下拉 Spotlight，输入拼音，点击右侧展开按钮，再关闭 Spotlight。
+4. 用 Filza 打开：
+   /var/mobile/Media/SpotlightCandidateFix/trace.txt
+5. 将 trace.txt 作为文件发给我。
+
+完成后请恢复正式版源码；诊断版只用于定位。
