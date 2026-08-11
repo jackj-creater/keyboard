@@ -2,7 +2,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -22,7 +26,7 @@ static const CGFloat kSCFBlackAlpha = 0.30;
 // The keyboard UI is hosted by the shared UIKit keyboard process.  A class
 // name such as UIKBBackdropView is therefore not enough to identify
 // Spotlight: the exact same classes are used by every application keyboard.
-// The SpringBoard companion writes this state while Spotlight is visible.
+// The Spotlight companion writes this state while the real Spotlight app is active.
 // The keyboard process polls the one-byte file briefly and never registers a
 // cross-process notification observer during launch.
 static const char *kSCFSpotlightStatePath =
@@ -30,14 +34,34 @@ static const char *kSCFSpotlightStatePath =
 static CFTimeInterval gSCFSpotlightStateCheckTime = 0.0;
 static BOOL gSCFSpotlightActive = NO;
 
+static void SCFWriteSpotlightProcessState(void) {
+    mkdir("/var/mobile/Media/SpotlightCandidateFix", 0755);
+    int fd = open(kSCFSpotlightStatePath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+
+    char value[64];
+    int length = snprintf(value, sizeof(value), "1 %d\n", (int)getpid());
+    if (length > 0) write(fd, value, (size_t)length);
+    close(fd);
+}
+
 static BOOL SCFReadSpotlightState(void) {
     int fd = open(kSCFSpotlightStatePath, O_RDONLY);
     if (fd < 0) return NO;
 
-    char value = '0';
-    ssize_t count = read(fd, &value, sizeof(value));
+    char value[64] = {0};
+    ssize_t count = read(fd, value, sizeof(value) - 1);
     close(fd);
-    return count == 1 && value == '1';
+    if (count <= 0) return NO;
+
+    int active = 0;
+    int pid = 0;
+    if (sscanf(value, "%d %d", &active, &pid) != 2 || !active || pid <= 0) return NO;
+
+    // The state is written only by the real Spotlight app.  A stale file
+    // after Spotlight exits must never enable the tweak in App Library.
+    int result = kill((pid_t)pid, 0);
+    return result == 0 || errno == EPERM;
 }
 
 static BOOL SCFSpotlightIsActive(void) {
@@ -313,6 +337,14 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 %end
+
+%ctor {
+    @autoreleasepool {
+        if ([NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.Spotlight"]) {
+            SCFWriteSpotlightProcessState();
+        }
+    }
+}
 
 %hook UIVisualEffectView
 

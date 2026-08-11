@@ -4,13 +4,10 @@ THEOS_PACKAGE_SCHEME = roothide
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = SpotlightCandidateFix SpotlightCandidateFixSpringBoard
+TWEAK_NAME = SpotlightCandidateFix
 SpotlightCandidateFix_FILES = Tweak.xm
 SpotlightCandidateFix_CFLAGS = -fobjc-arc
 SpotlightCandidateFix_FRAMEWORKS = UIKit QuartzCore
-SpotlightCandidateFixSpringBoard_FILES = SpringBoardGate.xm
-SpotlightCandidateFixSpringBoard_CFLAGS = -fobjc-arc
-SpotlightCandidateFixSpringBoard_FRAMEWORKS = UIKit
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
