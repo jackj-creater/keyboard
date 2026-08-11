@@ -79,6 +79,34 @@ static void SCFTraceView(UIView *view) {
     SCFWrite("--- END TRACE ---\n");
 }
 
+static BOOL SCFTreeContainsRelevant(UIView *view, NSUInteger depth) {
+    if (!view || depth > 18) return NO;
+    if (SCFRelevant(view)) return YES;
+    for (UIView *subview in view.subviews) {
+        if (SCFTreeContainsRelevant(subview, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+static void SCFTraceExistingWindows(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    for (UIScene *scene in application.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (![windows containsObject:window]) [windows addObject:window];
+        }
+    }
+    for (UIWindow *window in windows) {
+        if (!window.hidden && window.alpha > 0.01 && SCFTreeContainsRelevant(window, 0)) {
+            SCFWrite("=== EXISTING WINDOW %s FRAME:%.1f,%.1f %.1fx%.1f ===\n",
+                     SCFName(window), window.frame.origin.x, window.frame.origin.y,
+                     window.frame.size.width, window.frame.size.height);
+            SCFTraceTree(window, 0);
+        }
+    }
+}
+
 %hook UIView
 
 - (void)didMoveToWindow {
@@ -101,5 +129,13 @@ static void SCFTraceView(UIView *view) {
         SCFWrite("PROCESS:%s BUNDLE:%s\n",
                  NSProcessInfo.processInfo.processName.UTF8String ?: "",
                  NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            SCFTraceExistingWindows();
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            SCFTraceExistingWindows();
+        });
     }
 }
