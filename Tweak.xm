@@ -2,8 +2,10 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #include <fcntl.h>
+#include <mach-o/dyld.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/syslimits.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -76,7 +78,14 @@ static void SCFRefreshKeyboardAppearance(UIView *view) {
 %end
 
 %ctor {
-    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
-    gSCFIsSpotlight = [bundleID isEqualToString:@"com.apple.Spotlight"];
-    gSCFIsSpringBoard = [bundleID isEqualToString:@"com.apple.springboard"];
+    // This runs during dyld initialization.  Do not message NSBundle or
+    // NSString here: Spotlight and SpringBoard can crash before ObjC setup.
+    char executablePath[PATH_MAX] = {0};
+    uint32_t pathSize = sizeof(executablePath);
+    if (_NSGetExecutablePath(executablePath, &pathSize) != 0) return;
+
+    const char *name = strrchr(executablePath, '/');
+    name = name ? name + 1 : executablePath;
+    gSCFIsSpotlight = strcmp(name, "Spotlight") == 0;
+    gSCFIsSpringBoard = strcmp(name, "SpringBoard") == 0;
 }
