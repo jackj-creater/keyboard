@@ -1,7 +1,6 @@
 {
     Filter = {
         Executables = (
-            "Spotlight",
             "InputUI"
         );
     };
