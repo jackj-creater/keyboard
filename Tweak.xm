@@ -117,7 +117,6 @@ static UIColor *SCFTargetColor(void) {
     }
 }
 
-static const void *kSCFMarkedLayerKey = &kSCFMarkedLayerKey;
 static NSUInteger SCFRepairGradientLayer(CALayer *layer, UIColor *target);
 
 static NSUInteger SCFRepairLayerTree(CALayer *layer,
@@ -125,8 +124,6 @@ static NSUInteger SCFRepairLayerTree(CALayer *layer,
                                      NSUInteger depth) {
     if (!layer || depth > 28) return 0;
 
-    objc_setAssociatedObject(layer, kSCFMarkedLayerKey, @YES,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSUInteger changes = 0;
     CGColorRef backgroundColor = layer.backgroundColor;
     if (backgroundColor) {
@@ -262,7 +259,6 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 
     UIColor *target = SCFTargetColor();
     SCFRepairCandidateTree(view, target, 0);
-    SCFRepairLayerTree(view.layer, target, 0);
 }
 
 // UIKit rebuilds parts of the candidate strip after layout.  Repairing it
@@ -303,10 +299,7 @@ static UIView *SCFViewForLayer(CALayer *layer) {
 - (void)didMoveToWindow {
     %orig;
     if (!self.window || !SCFViewIsCandidateSurface(self)) return;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        SCFApplyToCandidateSurface(self);
-    });
+    SCFApplyToCandidateSurface(self);
 }
 
 - (void)layoutSubviews {
@@ -321,23 +314,6 @@ static UIView *SCFViewForLayer(CALayer *layer) {
 - (void)setEffect:(UIVisualEffect *)effect {
     if (effect && SCFViewIsCandidateSurface(self)) {
         %orig(nil);
-        return;
-    }
-    %orig;
-}
-
-%end
-
-%hook CALayer
-
-- (void)setBackgroundColor:(CGColorRef)color {
-    UIView *view = SCFViewForLayer(self);
-    UIColor *uiColor = color ? [UIColor colorWithCGColor:color] : nil;
-    BOOL markedCandidateLayer = [objc_getAssociatedObject(self, kSCFMarkedLayerKey) boolValue];
-    if ((view && SCFShouldSuppressBackground(view, uiColor)) ||
-        (markedCandidateLayer && uiColor &&
-         SCFColorLooksDark(uiColor, UIScreen.mainScreen.traitCollection))) {
-        %orig(SCFTargetColor().CGColor);
         return;
     }
     %orig;
