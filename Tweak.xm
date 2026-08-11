@@ -234,9 +234,40 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     SCFRepairCandidateTree(view, SCFTargetColor(), 0);
 }
 
+// UIKit rebuilds parts of the candidate strip after layout.  Repairing it
+// only once is therefore not enough: it can put a black colour/effect back
+// on the expand button or candidate grid on the following run-loop turn.
+// These helpers are deliberately limited to views in a candidate hierarchy;
+// regular keyboard keys and every other SpringBoard view are left untouched.
+static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
+    return view && color && SCFViewIsCandidateSurface(view) &&
+        SCFColorLooksDark(color, view.traitCollection);
+}
+
+static UIView *SCFViewForLayer(CALayer *layer) {
+    id delegate = layer.delegate;
+    return [delegate isKindOfClass:UIView.class] ? (UIView *)delegate : nil;
+}
+
 #pragma mark - Hook and Spotlight editing state
 
 %hook UIView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (SCFShouldSuppressBackground(self, color)) {
+        %orig(SCFTargetColor());
+        return;
+    }
+    %orig;
+}
+
+- (void)setOpaque:(BOOL)opaque {
+    if (opaque && SCFViewIsCandidateSurface(self)) {
+        %orig(NO);
+        return;
+    }
+    %orig;
+}
 
 - (void)didMoveToWindow {
     %orig;
@@ -250,6 +281,32 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 - (void)layoutSubviews {
     %orig;
     if (SCFViewIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
+}
+
+%end
+
+%hook UIVisualEffectView
+
+- (void)setEffect:(UIVisualEffect *)effect {
+    if (effect && SCFViewIsCandidateSurface(self)) {
+        %orig(nil);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%hook CALayer
+
+- (void)setBackgroundColor:(CGColorRef)color {
+    UIView *view = SCFViewForLayer(self);
+    UIColor *uiColor = color ? [UIColor colorWithCGColor:color] : nil;
+    if (view && SCFShouldSuppressBackground(view, uiColor)) {
+        %orig(SCFTargetColor().CGColor);
+        return;
+    }
+    %orig;
 }
 
 %end
