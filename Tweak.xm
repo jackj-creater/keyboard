@@ -15,15 +15,6 @@ static const NSInteger kSCFBackgroundMode = 0;
 // Suggested range: 0.18 - 0.45
 static const CGFloat kSCFBlackAlpha = 0.30;
 
-static __weak UIView *gSCFEditingResponder = nil;
-static BOOL gSCFKeyboardVisible = NO;
-static id gSCFTextFieldBeginObserver = nil;
-static id gSCFTextFieldEndObserver = nil;
-static id gSCFTextViewBeginObserver = nil;
-static id gSCFTextViewEndObserver = nil;
-static id gSCFKeyboardShowObserver = nil;
-static id gSCFKeyboardHideObserver = nil;
-
 #pragma mark - Class and context helpers
 
 static BOOL SCFCStringContainsInsensitive(const char *value, const char *needle) {
@@ -73,12 +64,6 @@ static BOOL SCFViewOrAncestorMatches(UIView *view,
         current = current.superview;
     }
     return NO;
-}
-
-static BOOL SCFSpotlightSearchIsEditing(void) {
-    if (!gSCFKeyboardVisible) return NO;
-    UIView *responder = gSCFEditingResponder;
-    return !responder || responder.isFirstResponder;
 }
 
 static BOOL SCFViewIsCandidateSurface(UIView *view) {
@@ -245,7 +230,6 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
 static void SCFApplyToCandidateSurface(UIView *view) {
     if (!view.window || !SCFViewIsCandidateSurface(view)) return;
     if (!SCFFrameCanBeCandidateSurface(view)) return;
-    if (!SCFSpotlightSearchIsEditing()) return;
 
     SCFRepairCandidateTree(view, SCFTargetColor(), 0);
 }
@@ -256,7 +240,6 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!SCFSpotlightSearchIsEditing()) return;
     if (!self.window || !SCFViewIsCandidateSurface(self)) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -266,57 +249,7 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (!SCFSpotlightSearchIsEditing()) return;
     if (SCFViewIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
 }
 
 %end
-
-%ctor {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @autoreleasepool {
-            NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-            gSCFTextFieldBeginObserver = [center addObserverForName:UITextFieldTextDidBeginEditingNotification
-                                                              object:nil
-                                                               queue:NSOperationQueue.mainQueue
-                                                          usingBlock:^(NSNotification *note) {
-                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
-                gSCFEditingResponder = view;
-                gSCFKeyboardVisible = YES;
-            }];
-            gSCFTextFieldEndObserver = [center addObserverForName:UITextFieldTextDidEndEditingNotification
-                                                            object:nil
-                                                             queue:NSOperationQueue.mainQueue
-                                                        usingBlock:^(NSNotification *note) {
-                if (note.object == gSCFEditingResponder) gSCFEditingResponder = nil;
-            }];
-            gSCFTextViewBeginObserver = [center addObserverForName:UITextViewTextDidBeginEditingNotification
-                                                             object:nil
-                                                              queue:NSOperationQueue.mainQueue
-                                                         usingBlock:^(NSNotification *note) {
-                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
-                gSCFEditingResponder = view;
-                gSCFKeyboardVisible = YES;
-            }];
-            gSCFTextViewEndObserver = [center addObserverForName:UITextViewTextDidEndEditingNotification
-                                                           object:nil
-                                                            queue:NSOperationQueue.mainQueue
-                                                       usingBlock:^(NSNotification *note) {
-                if (note.object == gSCFEditingResponder) gSCFEditingResponder = nil;
-            }];
-            gSCFKeyboardShowObserver = [center addObserverForName:UIKeyboardWillShowNotification
-                                                            object:nil
-                                                             queue:NSOperationQueue.mainQueue
-                                                        usingBlock:^(__unused NSNotification *note) {
-                gSCFKeyboardVisible = YES;
-            }];
-            gSCFKeyboardHideObserver = [center addObserverForName:UIKeyboardWillHideNotification
-                                                            object:nil
-                                                             queue:NSOperationQueue.mainQueue
-                                                        usingBlock:^(__unused NSNotification *note) {
-                gSCFKeyboardVisible = NO;
-                gSCFEditingResponder = nil;
-            }];
-        }
-    });
-}
