@@ -91,13 +91,21 @@ static BOOL SCFTreeContainsRelevant(UIView *view, NSUInteger depth) {
 static void SCFTraceExistingWindows(void) {
     UIApplication *application = UIApplication.sharedApplication;
     NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    for (UIWindow *window in application.windows) {
+        if (![windows containsObject:window]) [windows addObject:window];
+    }
     for (UIScene *scene in application.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             if (![windows containsObject:window]) [windows addObject:window];
         }
     }
+    SCFWrite("WINDOW_COUNT:%lu KEY:%s\n", (unsigned long)windows.count,
+             SCFName(application.keyWindow));
     for (UIWindow *window in windows) {
+        SCFWrite("WINDOW:%s HIDDEN:%s ALPHA:%.2f SUBVIEWS:%lu\n",
+                 SCFName(window), window.hidden ? "YES" : "NO", window.alpha,
+                 (unsigned long)window.subviews.count);
         if (!window.hidden && window.alpha > 0.01 && SCFTreeContainsRelevant(window, 0)) {
             SCFWrite("=== EXISTING WINDOW %s FRAME:%.1f,%.1f %.1fx%.1f ===\n",
                      SCFName(window), window.frame.origin.x, window.frame.origin.y,
