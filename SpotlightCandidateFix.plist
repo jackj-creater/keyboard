@@ -1,8 +1,7 @@
 {
     Filter = {
-        Bundles = (
-            "com.apple.InputUI",
-            "com.apple.Spotlight"
+        Executables = (
+            "SpringBoard"
         );
     };
 }
