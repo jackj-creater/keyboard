@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -13,7 +14,18 @@ static const void *gSCFSeen[1024];
 static size_t gSCFSeenCount = 0;
 
 static BOOL SCFContains(const char *value, const char *needle) {
-    return value && needle && strstr(value, needle) != NULL;
+    if (!value || !needle || !*needle) return NO;
+    size_t length = strlen(needle);
+    for (const char *start = value; *start; start++) {
+        size_t index = 0;
+        while (index < length && start[index] &&
+               tolower((unsigned char)start[index]) ==
+               tolower((unsigned char)needle[index])) {
+            index++;
+        }
+        if (index == length) return YES;
+    }
+    return NO;
 }
 
 static const char *SCFName(id object) {
