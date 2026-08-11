@@ -1,8 +1,8 @@
 {
     Filter = {
-        Executables = (
-            "InputUI",
-            "Spotlight"
+        Bundles = (
+            "com.apple.InputUI",
+            "com.apple.Spotlight"
         );
     };
 }
