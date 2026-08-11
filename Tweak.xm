@@ -119,29 +119,6 @@ static UIColor *SCFTargetColor(void) {
 
 static NSUInteger SCFRepairGradientLayer(CALayer *layer, UIColor *target);
 
-static NSUInteger SCFRepairLayerTree(CALayer *layer,
-                                     UIColor *target,
-                                     NSUInteger depth) {
-    if (!layer || depth > 28) return 0;
-
-    NSUInteger changes = 0;
-    CGColorRef backgroundColor = layer.backgroundColor;
-    if (backgroundColor) {
-        UIColor *background = [UIColor colorWithCGColor:backgroundColor];
-        if (SCFColorLooksDark(background, UIScreen.mainScreen.traitCollection) &&
-            !CGColorEqualToColor(backgroundColor, target.CGColor)) {
-            layer.backgroundColor = target.CGColor;
-            layer.opaque = NO;
-            changes++;
-        }
-    }
-    changes += SCFRepairGradientLayer(layer, target);
-    for (CALayer *sublayer in layer.sublayers) {
-        changes += SCFRepairLayerTree(sublayer, target, depth + 1);
-    }
-    return changes;
-}
-
 static BOOL SCFClassLooksLikeBackground(UIView *view) {
     static const char *const backgroundKeywords[] = {
         "background", "backdrop", "material", "platter",
@@ -269,11 +246,6 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     return view && color && SCFViewIsCandidateSurface(view) &&
         SCFColorLooksDark(color, view.traitCollection);
-}
-
-static UIView *SCFViewForLayer(CALayer *layer) {
-    id delegate = layer.delegate;
-    return [delegate isKindOfClass:UIView.class] ? (UIView *)delegate : nil;
 }
 
 #pragma mark - Hook and Spotlight editing state
