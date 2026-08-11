@@ -21,30 +21,27 @@ static BOOL SCFSpotlightIsActive(void) {
     return result == 0 || errno == EPERM;
 }
 
-static BOOL SCFIsCandidateBackground(UIView *view) {
-    const char *name = class_getName(object_getClass(view));
-    if (!name) return NO;
-    return strstr(name, "UIKBBackdropView") != NULL ||
-           strstr(name, "UIKBInputBackdropView") != NULL ||
-           strstr(name, "UIKeyboardDockView") != NULL;
+static BOOL SCFIsCandidateContext(UIView *view) {
+    UIView *current = view;
+    for (NSUInteger depth = 0; current && depth < 10; depth++, current = current.superview) {
+        const char *name = class_getName(object_getClass(current));
+        if (!name) continue;
+        if (strstr(name, "UIKBBackdropView") ||
+            strstr(name, "UIKBInputBackdropView") ||
+            strstr(name, "UIInputSetHostView") ||
+            strstr(name, "UIKeyboardDockView")) return YES;
+    }
+    return NO;
 }
 
-static void SCFApplyMinimalBackground(UIView *view) {
-    if (!SCFSpotlightIsActive() || !SCFIsCandidateBackground(view)) return;
-    view.backgroundColor = UIColor.clearColor;
-    view.layer.backgroundColor = UIColor.clearColor.CGColor;
-}
+%hook UIVisualEffectView
 
-%hook UIView
-
-- (void)didMoveToWindow {
+- (void)setEffect:(UIVisualEffect *)effect {
+    if (SCFSpotlightIsActive() && SCFIsCandidateContext(self) && effect) {
+        %orig(nil);
+        return;
+    }
     %orig;
-    SCFApplyMinimalBackground(self);
-}
-
-- (void)layoutSubviews {
-    %orig;
-    SCFApplyMinimalBackground(self);
 }
 
 %end
