@@ -88,6 +88,8 @@ static BOOL SCFTreeContainsRelevant(UIView *view, NSUInteger depth) {
     return NO;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static void SCFTraceExistingWindows(void) {
     UIApplication *application = UIApplication.sharedApplication;
     NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
@@ -114,6 +116,7 @@ static void SCFTraceExistingWindows(void) {
         }
     }
 }
+#pragma clang diagnostic pop
 
 %hook UIView
 
