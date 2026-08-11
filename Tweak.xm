@@ -15,9 +15,14 @@ static const NSInteger kSCFBackgroundMode = 0;
 // Suggested range: 0.18 - 0.45
 static const CGFloat kSCFBlackAlpha = 0.30;
 
-static __weak UIView *gSCFSpotlightResponder = nil;
-static id gSCFBeginEditingObserver = nil;
-static id gSCFEndEditingObserver = nil;
+static __weak UIView *gSCFEditingResponder = nil;
+static BOOL gSCFKeyboardVisible = NO;
+static id gSCFTextFieldBeginObserver = nil;
+static id gSCFTextFieldEndObserver = nil;
+static id gSCFTextViewBeginObserver = nil;
+static id gSCFTextViewEndObserver = nil;
+static id gSCFKeyboardShowObserver = nil;
+static id gSCFKeyboardHideObserver = nil;
 
 #pragma mark - Class and context helpers
 
@@ -53,8 +58,9 @@ static BOOL SCFClassNameContainsAny(id object,
     return NO;
 }
 
-static const char *const kSCFSearchKeywords[] = {
-    "spotlight", "search", "searchui"
+static const char *const kSCFCandidateKeywords[] = {
+    "candidate", "prediction", "completion", "suggestion",
+    "autocorrection", "alternative", "proactive", "inline"
 };
 
 static BOOL SCFViewOrAncestorMatches(UIView *view,
@@ -69,49 +75,19 @@ static BOOL SCFViewOrAncestorMatches(UIView *view,
     return NO;
 }
 
-static BOOL SCFControllerChainMatches(UIView *view,
-                                      const char *const *keywords,
-                                      size_t keywordCount) {
-    UIResponder *responder = view;
-    for (NSUInteger depth = 0; responder && depth < 24; depth++) {
-        if (SCFClassNameContainsAny(responder, keywords, keywordCount)) return YES;
-        responder = responder.nextResponder;
-    }
-    return NO;
-}
-
-static BOOL SCFViewBelongsToSpotlightSearch(UIView *view) {
-    if (!view) return NO;
-    const size_t count = sizeof(kSCFSearchKeywords) / sizeof(kSCFSearchKeywords[0]);
-    return SCFViewOrAncestorMatches(view, kSCFSearchKeywords, count, 20) ||
-           SCFControllerChainMatches(view, kSCFSearchKeywords, count);
-}
-
 static BOOL SCFSpotlightSearchIsEditing(void) {
-    UIView *responder = gSCFSpotlightResponder;
-    return responder && responder.isFirstResponder;
+    if (!gSCFKeyboardVisible) return NO;
+    UIView *responder = gSCFEditingResponder;
+    return !responder || responder.isFirstResponder;
 }
 
 static BOOL SCFViewIsCandidateSurface(UIView *view) {
-    const char *name = SCFClassName(view);
-    if (!name || !*name) return NO;
-
-    BOOL candidateClass = SCFCStringContainsInsensitive(name, "candidate") ||
-                          SCFCStringContainsInsensitive(name, "prediction") ||
-                          SCFCStringContainsInsensitive(name, "completion");
-    if (!candidateClass) return NO;
-
-    // Cells own selection/highlight visuals and are intentionally left alone.
-    if (SCFCStringContainsInsensitive(name, "cell") ||
-        SCFCStringContainsInsensitive(name, "label")) return NO;
-
-    static const char *const surfaceKeywords[] = {
-        "bar", "grid", "overlay", "toggle", "arrow",
-        "inline", "header", "background", "view"
-    };
-    return SCFClassNameContainsAny(view,
-                                   surfaceKeywords,
-                                   sizeof(surfaceKeywords) / sizeof(surfaceKeywords[0]));
+    if (!view) return NO;
+    return SCFViewOrAncestorMatches(
+        view,
+        kSCFCandidateKeywords,
+        sizeof(kSCFCandidateKeywords) / sizeof(kSCFCandidateKeywords[0]),
+        16);
 }
 
 static BOOL SCFFrameCanBeCandidateSurface(UIView *view) {
@@ -203,8 +179,7 @@ static NSUInteger SCFRepairGradientLayer(CALayer *layer, UIColor *target) {
 
 static NSUInteger SCFRepairCandidateTree(UIView *view,
                                          UIColor *target,
-                                         NSUInteger depth,
-                                         BOOL insideCell) {
+                                         NSUInteger depth) {
     if (!view || depth > 18) return 0;
 
     BOOL isCell = [view isKindOfClass:UICollectionViewCell.class] ||
@@ -212,18 +187,36 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
                   SCFCStringContainsInsensitive(SCFClassName(view), "cell");
     BOOL isBackground = SCFClassLooksLikeBackground(view);
     BOOL isSurface = SCFViewIsCandidateSurface(view);
-    BOOL preserveCellContent = (insideCell || isCell) && !isBackground;
     NSUInteger changes = 0;
 
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label = (UILabel *)view;
+        if (!SCFColorsEqual(label.textColor, UIColor.whiteColor, label.traitCollection)) {
+            label.textColor = UIColor.whiteColor;
+            changes++;
+        }
+        label.backgroundColor = UIColor.clearColor;
+    }
+
+    if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button = (UIButton *)view;
+        button.tintColor = UIColor.whiteColor;
+        [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        [button setTitleColor:UIColor.whiteColor forState:UIControlStateHighlighted];
+        [button setTitleColor:UIColor.whiteColor forState:UIControlStateSelected];
+        changes++;
+    }
+
     UIColor *background = view.backgroundColor;
-    BOOL shouldReplaceViewColor = !preserveCellContent &&
-        (isSurface || isBackground || SCFColorLooksDark(background, view.traitCollection));
+    BOOL shouldReplaceViewColor = isSurface || isBackground || isCell ||
+        [view isKindOfClass:UILabel.class] || [view isKindOfClass:UIButton.class] ||
+        SCFColorLooksDark(background, view.traitCollection);
     if (shouldReplaceViewColor && !SCFColorsEqual(background, target, view.traitCollection)) {
         view.backgroundColor = target;
         changes++;
     }
 
-    BOOL shouldReplaceLayerColor = !preserveCellContent && view.layer.backgroundColor &&
+    BOOL shouldReplaceLayerColor = view.layer.backgroundColor &&
         (isSurface || isBackground ||
          SCFColorLooksDark([UIColor colorWithCGColor:view.layer.backgroundColor], view.traitCollection));
     if (shouldReplaceLayerColor &&
@@ -232,7 +225,7 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
         changes++;
     }
 
-    if (!preserveCellContent && [view isKindOfClass:UIVisualEffectView.class]) {
+    if ([view isKindOfClass:UIVisualEffectView.class]) {
         UIVisualEffectView *effectView = (UIVisualEffectView *)view;
         if (effectView.effect) {
             effectView.effect = nil;
@@ -240,12 +233,11 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
         }
     }
 
-    if (!preserveCellContent) changes += SCFRepairGradientLayer(view.layer, target);
+    changes += SCFRepairGradientLayer(view.layer, target);
     view.opaque = (kSCFBackgroundMode == 2);
 
-    BOOL descendantsInsideCell = insideCell || isCell;
     for (UIView *subview in view.subviews) {
-        changes += SCFRepairCandidateTree(subview, target, depth + 1, descendantsInsideCell);
+        changes += SCFRepairCandidateTree(subview, target, depth + 1);
     }
     return changes;
 }
@@ -255,7 +247,7 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFFrameCanBeCandidateSurface(view)) return;
     if (!SCFSpotlightSearchIsEditing()) return;
 
-    SCFRepairCandidateTree(view, SCFTargetColor(), 0, NO);
+    SCFRepairCandidateTree(view, SCFTargetColor(), 0);
 }
 
 #pragma mark - Hook and Spotlight editing state
@@ -284,18 +276,46 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-            gSCFBeginEditingObserver = [center addObserverForName:UITextFieldTextDidBeginEditingNotification
+            gSCFTextFieldBeginObserver = [center addObserverForName:UITextFieldTextDidBeginEditingNotification
+                                                              object:nil
+                                                               queue:NSOperationQueue.mainQueue
+                                                          usingBlock:^(NSNotification *note) {
+                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
+                gSCFEditingResponder = view;
+                gSCFKeyboardVisible = YES;
+            }];
+            gSCFTextFieldEndObserver = [center addObserverForName:UITextFieldTextDidEndEditingNotification
+                                                            object:nil
+                                                             queue:NSOperationQueue.mainQueue
+                                                        usingBlock:^(NSNotification *note) {
+                if (note.object == gSCFEditingResponder) gSCFEditingResponder = nil;
+            }];
+            gSCFTextViewBeginObserver = [center addObserverForName:UITextViewTextDidBeginEditingNotification
+                                                             object:nil
+                                                              queue:NSOperationQueue.mainQueue
+                                                         usingBlock:^(NSNotification *note) {
+                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
+                gSCFEditingResponder = view;
+                gSCFKeyboardVisible = YES;
+            }];
+            gSCFTextViewEndObserver = [center addObserverForName:UITextViewTextDidEndEditingNotification
                                                            object:nil
                                                             queue:NSOperationQueue.mainQueue
                                                        usingBlock:^(NSNotification *note) {
-                UIView *view = [note.object isKindOfClass:UIView.class] ? note.object : nil;
-                if (SCFViewBelongsToSpotlightSearch(view)) gSCFSpotlightResponder = view;
+                if (note.object == gSCFEditingResponder) gSCFEditingResponder = nil;
             }];
-            gSCFEndEditingObserver = [center addObserverForName:UITextFieldTextDidEndEditingNotification
-                                                         object:nil
-                                                          queue:NSOperationQueue.mainQueue
-                                                     usingBlock:^(NSNotification *note) {
-                if (note.object == gSCFSpotlightResponder) gSCFSpotlightResponder = nil;
+            gSCFKeyboardShowObserver = [center addObserverForName:UIKeyboardWillShowNotification
+                                                            object:nil
+                                                             queue:NSOperationQueue.mainQueue
+                                                        usingBlock:^(__unused NSNotification *note) {
+                gSCFKeyboardVisible = YES;
+            }];
+            gSCFKeyboardHideObserver = [center addObserverForName:UIKeyboardWillHideNotification
+                                                            object:nil
+                                                             queue:NSOperationQueue.mainQueue
+                                                        usingBlock:^(__unused NSNotification *note) {
+                gSCFKeyboardVisible = NO;
+                gSCFEditingResponder = nil;
             }];
         }
     });
