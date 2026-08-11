@@ -1,8 +1,11 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 
 #pragma mark - User-adjustable constants
 
@@ -16,6 +19,67 @@ static const NSInteger kSCFBackgroundMode = 0;
 static const CGFloat kSCFBlackAlpha = 0.30;
 
 #pragma mark - Class and context helpers
+
+// The keyboard UI is hosted by the shared UIKit keyboard process.  A class
+// name such as UIKBBackdropView is therefore not enough to identify
+// Spotlight: the exact same classes are used by every application keyboard.
+// The SpringBoard companion writes this state while Spotlight is visible and
+// broadcasts the change with Darwin notifications.
+static const char *kSCFSpotlightStatePath =
+    "/var/mobile/Media/SpotlightCandidateFix/spotlight-active";
+static CFStringRef kSCFSpotlightDidOpenNotification =
+    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-open");
+static CFStringRef kSCFSpotlightDidCloseNotification =
+    CFSTR("com.keyboard.spotlightcandidatefix.spotlight-close");
+static volatile BOOL gSCFSpotlightActive = NO;
+static volatile BOOL gSCFSpotlightStateInitialized = NO;
+
+static BOOL SCFReadSpotlightState(void) {
+    int fd = open(kSCFSpotlightStatePath, O_RDONLY);
+    if (fd < 0) return NO;
+
+    char value = '0';
+    ssize_t count = read(fd, &value, sizeof(value));
+    close(fd);
+    return count == 1 && value == '1';
+}
+
+static void SCFSpotlightStateChanged(CFNotificationCenterRef center,
+                                     void *observer,
+                                     CFStringRef name,
+                                     const void *object,
+                                     CFDictionaryRef userInfo) {
+    (void)center;
+    (void)observer;
+    (void)object;
+    (void)userInfo;
+    if (name && (name == kSCFSpotlightDidOpenNotification ||
+        CFStringCompare(name, kSCFSpotlightDidOpenNotification, 0) == kCFCompareEqualTo)) {
+        gSCFSpotlightActive = YES;
+    } else if (name && (name == kSCFSpotlightDidCloseNotification ||
+               CFStringCompare(name, kSCFSpotlightDidCloseNotification, 0) == kCFCompareEqualTo)) {
+        gSCFSpotlightActive = NO;
+    }
+    gSCFSpotlightStateInitialized = YES;
+}
+
+static BOOL SCFSpotlightIsActive(void) {
+    if (!gSCFSpotlightStateInitialized) {
+        gSCFSpotlightActive = SCFReadSpotlightState();
+        gSCFSpotlightStateInitialized = YES;
+    }
+    return gSCFSpotlightActive;
+}
+
+static void SCFInstallSpotlightStateObserver(void) {
+    CFNotificationCenterRef center = CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterAddObserver(center, NULL, SCFSpotlightStateChanged,
+                                    kSCFSpotlightDidOpenNotification, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(center, NULL, SCFSpotlightStateChanged,
+                                    kSCFSpotlightDidCloseNotification, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+}
 
 static BOOL SCFCStringContainsInsensitive(const char *value, const char *needle) {
     if (!value || !needle || !*needle) return NO;
@@ -231,6 +295,7 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
 }
 
 static void SCFApplyToCandidateSurface(UIView *view) {
+    if (!SCFSpotlightIsActive()) return;
     if (!view.window || !SCFViewIsCandidateSurface(view)) return;
     if (!SCFFrameCanBeCandidateSurface(view)) return;
 
@@ -244,7 +309,7 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 // These helpers are deliberately limited to views in a candidate hierarchy;
 // regular keyboard keys and every other SpringBoard view are left untouched.
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
-    return view && color && SCFViewIsCandidateSurface(view) &&
+    return SCFSpotlightIsActive() && view && color && SCFViewIsCandidateSurface(view) &&
         SCFColorLooksDark(color, view.traitCollection);
 }
 
@@ -261,7 +326,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 - (void)setOpaque:(BOOL)opaque {
-    if (opaque && SCFViewIsCandidateSurface(self)) {
+    if (opaque && SCFSpotlightIsActive() && SCFViewIsCandidateSurface(self)) {
         %orig(NO);
         return;
     }
@@ -284,7 +349,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 %hook UIVisualEffectView
 
 - (void)setEffect:(UIVisualEffect *)effect {
-    if (effect && SCFViewIsCandidateSurface(self)) {
+    if (effect && SCFSpotlightIsActive() && SCFViewIsCandidateSurface(self)) {
         %orig(nil);
         return;
     }
@@ -292,3 +357,9 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 %end
+
+%ctor {
+    @autoreleasepool {
+        SCFInstallSpotlightStateObserver();
+    }
+}
