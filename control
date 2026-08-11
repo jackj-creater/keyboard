@@ -1,8 +1,8 @@
 Package: com.keyboard.spotlightcandidatefix
-Name: SpotlightCandidateFix Diagnostic
+Name: SpotlightCandidateFix
 Version: 0.3.0
 Architecture: iphoneos-arm64e
-Description: Diagnostic build for Spotlight keyboard candidate view hierarchy on iOS 17.
+Description: Repairs Spotlight Chinese candidate bar, expand button, and expanded panel backgrounds on iOS 17.
 Maintainer: Keyboard Project
 Author: Keyboard Project
 Section: Tweaks
