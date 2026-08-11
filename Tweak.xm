@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#include <dispatch/dispatch.h>
 #include <ctype.h>
 #include <mach-o/dyld.h>
 #include <stdio.h>
@@ -98,4 +99,11 @@ static void SCFTraceView(UIView *view) {
     const char *name = strrchr(executablePath, '/');
     name = name ? name + 1 : executablePath;
     gSCFIsInputUI = strcmp(name, "InputUI") == 0;
+    if (gSCFIsInputUI) {
+        // Run after process startup, not inside dyld initialization.  InputUI
+        // may render through remote layers and never invoke UIView callbacks.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SCFOpenTraceIfNeeded();
+        });
+    }
 }
