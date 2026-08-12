@@ -33,6 +33,7 @@ static BOOL gSCFIsInputUIProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
 static CFTimeInterval gSCFLastStateCheck = 0.0;
 static BOOL gSCFCachedActive = NO;
+static NSUInteger gSCFInternalRepairDepth = 0;
 static id gSCFDidBecomeActiveObserver = nil;
 static id gSCFWillResignActiveObserver = nil;
 static id gSCFWillEnterForegroundObserver = nil;
@@ -203,6 +204,17 @@ static const char *const kSCFCandidateKeywords[] = {
     "uikbbackdrop", "uikbinputbackdrop", "inputsethost", "keyboarddock"
 };
 
+static BOOL SCFViewClassIsCandidateSurface(UIView *view) {
+    static const char *const layoutKeywords[] = {
+        "candidate", "prediction", "completion", "suggestion",
+        "autocorrection", "alternative", "proactive", "inline"
+    };
+    return view && SCFClassNameContainsAny(
+        view,
+        layoutKeywords,
+        sizeof(layoutKeywords) / sizeof(layoutKeywords[0]));
+}
+
 static BOOL SCFViewOrAncestorMatches(UIView *view,
                                      const char *const *keywords,
                                      size_t keywordCount,
@@ -331,16 +343,37 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
             label.textColor = UIColor.whiteColor;
             changes++;
         }
-        label.backgroundColor = UIColor.clearColor;
+        if (!SCFColorsEqual(label.backgroundColor, UIColor.clearColor,
+                            label.traitCollection)) {
+            label.backgroundColor = UIColor.clearColor;
+            changes++;
+        }
     }
 
     if ([view isKindOfClass:UIButton.class]) {
         UIButton *button = (UIButton *)view;
-        button.tintColor = UIColor.whiteColor;
-        [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-        [button setTitleColor:UIColor.whiteColor forState:UIControlStateHighlighted];
-        [button setTitleColor:UIColor.whiteColor forState:UIControlStateSelected];
-        changes++;
+        if (!SCFColorsEqual(button.tintColor, UIColor.whiteColor,
+                            button.traitCollection)) {
+            button.tintColor = UIColor.whiteColor;
+            changes++;
+        }
+        if (!SCFColorsEqual([button titleColorForState:UIControlStateNormal],
+                            UIColor.whiteColor, button.traitCollection)) {
+            [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+            changes++;
+        }
+        if (!SCFColorsEqual([button titleColorForState:UIControlStateHighlighted],
+                            UIColor.whiteColor, button.traitCollection)) {
+            [button setTitleColor:UIColor.whiteColor
+                          forState:UIControlStateHighlighted];
+            changes++;
+        }
+        if (!SCFColorsEqual([button titleColorForState:UIControlStateSelected],
+                            UIColor.whiteColor, button.traitCollection)) {
+            [button setTitleColor:UIColor.whiteColor
+                          forState:UIControlStateSelected];
+            changes++;
+        }
     }
 
     UIColor *background = view.backgroundColor;
@@ -370,7 +403,11 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
     }
 
     changes += SCFRepairGradientLayer(view.layer, target);
-    view.opaque = (kSCFBackgroundMode == 2);
+    BOOL targetOpaque = (kSCFBackgroundMode == 2);
+    if (view.opaque != targetOpaque) {
+        view.opaque = targetOpaque;
+        changes++;
+    }
 
     for (UIView *subview in view.subviews) {
         changes += SCFRepairCandidateTree(subview, target, depth + 1);
@@ -384,7 +421,9 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFFrameCanBeCandidateSurface(view)) return;
 
     UIColor *target = SCFTargetColor();
+    gSCFInternalRepairDepth++;
     SCFRepairCandidateTree(view, target, 0);
+    gSCFInternalRepairDepth--;
 }
 
 // UIKit rebuilds parts of the candidate strip after layout.  Repairing it
@@ -393,7 +432,8 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 // These helpers are deliberately limited to views in a candidate hierarchy;
 // regular keyboard keys and every other SpringBoard view are left untouched.
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
-    return SCFSpotlightIsForeground() && view && color && SCFViewIsCandidateSurface(view) &&
+    return SCFSpotlightIsForeground() && view && color &&
+        SCFViewIsCandidateSurface(view) &&
         SCFColorLooksDark(color, view.traitCollection);
 }
 
@@ -402,6 +442,10 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 %hook UIView
 
 - (void)setBackgroundColor:(UIColor *)color {
+    if (gSCFInternalRepairDepth > 0) {
+        %orig;
+        return;
+    }
     if (SCFShouldSuppressBackground(self, color)) {
         %orig(SCFTargetColor());
         return;
@@ -410,6 +454,10 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 - (void)setOpaque:(BOOL)opaque {
+    if (gSCFInternalRepairDepth > 0) {
+        %orig;
+        return;
+    }
     if (opaque && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(NO);
         return;
@@ -425,7 +473,11 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 
 - (void)layoutSubviews {
     %orig;
-    if (SCFViewIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
+    if (!self.window || self.hidden || self.alpha < 0.01) return;
+    // During the pull-down animation every descendant lays out.  Scanning
+    // only actual candidate container classes avoids recursively walking the
+    // same tree once per child while preserving the full repair below it.
+    if (SCFViewClassIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
 }
 
 %end
@@ -433,6 +485,10 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 %hook UIVisualEffectView
 
 - (void)setEffect:(UIVisualEffect *)effect {
+    if (gSCFInternalRepairDepth > 0) {
+        %orig;
+        return;
+    }
     if (effect && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(nil);
         return;
