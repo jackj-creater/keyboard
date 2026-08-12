@@ -23,11 +23,43 @@ static const CGFloat kSCFBlackAlpha = 0.30;
 
 static const char *const kSCFStateName =
     "com.keyboard.spotlightcandidatefix.foreground-heartbeat";
-static const uint64_t kSCFHeartbeatLifetimeMs = 1500;
+static const uint64_t kSCFHeartbeatLifetimeMs = 200;
 static BOOL gSCFIsSpotlightProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
 static CFTimeInterval gSCFLastStateCheck = 0.0;
 static BOOL gSCFCachedActive = NO;
+static BOOL gSCFHasPublishedState = NO;
+static BOOL gSCFLastPublishedActive = NO;
+
+@interface SCFOriginalViewState : NSObject
+@property (nonatomic, strong) UIColor *backgroundColor;
+@property (nonatomic, assign) BOOL opaque;
+@property (nonatomic, assign) BOOL hadLayerBackgroundColor;
+@property (nonatomic, strong) UIColor *layerBackgroundColor;
+@property (nonatomic, assign) BOOL isEffectView;
+@property (nonatomic, strong) UIVisualEffect *effect;
+@property (nonatomic, assign) BOOL isGradientLayer;
+@property (nonatomic, copy) NSArray *gradientColors;
+@property (nonatomic, assign) BOOL isLabel;
+@property (nonatomic, strong) UIColor *labelTextColor;
+@property (nonatomic, assign) BOOL isButton;
+@property (nonatomic, strong) UIColor *buttonTintColor;
+@property (nonatomic, strong) UIColor *buttonNormalColor;
+@property (nonatomic, strong) UIColor *buttonHighlightedColor;
+@property (nonatomic, strong) UIColor *buttonSelectedColor;
+@end
+
+@implementation SCFOriginalViewState
+@end
+
+static const void *kSCFOriginalViewStateKey = &kSCFOriginalViewStateKey;
+static NSHashTable<UIView *> *gSCFTrackedViews = nil;
+static BOOL gSCFCandidateMonitorRunning = NO;
+static BOOL gSCFCandidateMonitorHasState = NO;
+static BOOL gSCFCandidateMonitorLastActive = NO;
+static NSUInteger gSCFInternalMutationDepth = 0;
+
+static void SCFStartCandidateStateMonitor(void);
 
 static uint64_t SCFNowMilliseconds(void) {
     struct timeval value;
@@ -43,10 +75,11 @@ static void SCFEnsureStateToken(void) {
     }
 }
 
-static void SCFWriteSpotlightHeartbeat(void) {
+static void SCFWriteSpotlightState(BOOL active) {
     SCFEnsureStateToken();
     if (gSCFStateToken == NOTIFY_TOKEN_INVALID) return;
-    notify_set_state(gSCFStateToken, SCFNowMilliseconds());
+    uint64_t state = (SCFNowMilliseconds() << 1) | (active ? 1ULL : 0ULL);
+    notify_set_state(gSCFStateToken, state);
     notify_post(kSCFStateName);
 }
 
@@ -61,13 +94,14 @@ static BOOL SCFSpotlightIsForeground(void) {
         return NO;
     }
 
-    uint64_t heartbeat = 0;
-    if (notify_get_state(gSCFStateToken, &heartbeat) != NOTIFY_STATUS_OK ||
-        heartbeat == 0) {
+    uint64_t state = 0;
+    if (notify_get_state(gSCFStateToken, &state) != NOTIFY_STATUS_OK ||
+        state == 0 || (state & 1ULL) == 0) {
         gSCFCachedActive = NO;
         return NO;
     }
 
+    uint64_t heartbeat = state >> 1;
     uint64_t current = SCFNowMilliseconds();
     gSCFCachedActive =
         current >= heartbeat && current - heartbeat <= kSCFHeartbeatLifetimeMs;
@@ -87,9 +121,14 @@ static BOOL SCFSpotlightSceneIsForeground(void) {
 
 static void SCFScheduleSpotlightHeartbeat(void) {
     if (!gSCFIsSpotlightProcess) return;
-    if (SCFSpotlightSceneIsForeground()) SCFWriteSpotlightHeartbeat();
+    BOOL active = SCFSpotlightSceneIsForeground();
+    if (!gSCFHasPublishedState || active != gSCFLastPublishedActive || active) {
+        SCFWriteSpotlightState(active);
+        gSCFHasPublishedState = YES;
+        gSCFLastPublishedActive = active;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.25 * NSEC_PER_SEC)),
+                                 (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         SCFScheduleSpotlightHeartbeat();
     });
@@ -197,6 +236,48 @@ static UIColor *SCFTargetColor(void) {
     }
 }
 
+static void SCFRememberOriginalState(UIView *view) {
+    if (!view || objc_getAssociatedObject(view, kSCFOriginalViewStateKey)) return;
+
+    SCFOriginalViewState *state = [SCFOriginalViewState new];
+    state.backgroundColor = view.backgroundColor;
+    state.opaque = view.opaque;
+    if (view.layer.backgroundColor) {
+        state.hadLayerBackgroundColor = YES;
+        state.layerBackgroundColor = [UIColor colorWithCGColor:view.layer.backgroundColor];
+    }
+
+    if ([view isKindOfClass:UIVisualEffectView.class]) {
+        state.isEffectView = YES;
+        state.effect = ((UIVisualEffectView *)view).effect;
+    }
+
+    if ([view.layer isKindOfClass:CAGradientLayer.class]) {
+        state.isGradientLayer = YES;
+        state.gradientColors = [((CAGradientLayer *)view.layer).colors copy];
+    }
+
+    if ([view isKindOfClass:UILabel.class]) {
+        state.isLabel = YES;
+        state.labelTextColor = ((UILabel *)view).textColor;
+    }
+
+    if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button = (UIButton *)view;
+        state.isButton = YES;
+        state.buttonTintColor = button.tintColor;
+        state.buttonNormalColor = [button titleColorForState:UIControlStateNormal];
+        state.buttonHighlightedColor = [button titleColorForState:UIControlStateHighlighted];
+        state.buttonSelectedColor = [button titleColorForState:UIControlStateSelected];
+    }
+
+    objc_setAssociatedObject(view, kSCFOriginalViewStateKey, state,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gSCFTrackedViews) gSCFTrackedViews = [NSHashTable weakObjectsHashTable];
+    [gSCFTrackedViews addObject:view];
+    SCFStartCandidateStateMonitor();
+}
+
 static NSUInteger SCFRepairGradientLayer(CALayer *layer, UIColor *target);
 
 static BOOL SCFClassLooksLikeBackground(UIView *view) {
@@ -249,6 +330,8 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
                                          UIColor *target,
                                          NSUInteger depth) {
     if (!view || depth > 18) return 0;
+
+    SCFRememberOriginalState(view);
 
     BOOL isCell = [view isKindOfClass:UICollectionViewCell.class] ||
                   [view isKindOfClass:UITableViewCell.class] ||
@@ -316,7 +399,105 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFFrameCanBeCandidateSurface(view)) return;
 
     UIColor *target = SCFTargetColor();
+    gSCFInternalMutationDepth++;
     SCFRepairCandidateTree(view, target, 0);
+    gSCFInternalMutationDepth--;
+}
+
+static void SCFRestoreTrackedCandidateViews(void) {
+    NSArray<UIView *> *views = gSCFTrackedViews.allObjects;
+    [UIView performWithoutAnimation:^{
+        gSCFInternalMutationDepth++;
+        for (UIView *view in views) {
+            SCFOriginalViewState *state =
+                objc_getAssociatedObject(view, kSCFOriginalViewStateKey);
+            if (!state) continue;
+
+            view.backgroundColor = state.backgroundColor;
+            view.opaque = state.opaque;
+            view.layer.backgroundColor = state.hadLayerBackgroundColor
+                ? state.layerBackgroundColor.CGColor : nil;
+
+            if (state.isEffectView && [view isKindOfClass:UIVisualEffectView.class]) {
+                ((UIVisualEffectView *)view).effect = state.effect;
+            }
+            if (state.isGradientLayer &&
+                [view.layer isKindOfClass:CAGradientLayer.class]) {
+                ((CAGradientLayer *)view.layer).colors = state.gradientColors;
+            }
+            if (state.isLabel && [view isKindOfClass:UILabel.class]) {
+                ((UILabel *)view).textColor = state.labelTextColor;
+            }
+            if (state.isButton && [view isKindOfClass:UIButton.class]) {
+                UIButton *button = (UIButton *)view;
+                button.tintColor = state.buttonTintColor;
+                [button setTitleColor:state.buttonNormalColor
+                              forState:UIControlStateNormal];
+                [button setTitleColor:state.buttonHighlightedColor
+                              forState:UIControlStateHighlighted];
+                [button setTitleColor:state.buttonSelectedColor
+                              forState:UIControlStateSelected];
+            }
+
+            // Capture a fresh baseline next time Spotlight becomes active.
+            objc_setAssociatedObject(view, kSCFOriginalViewStateKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        gSCFInternalMutationDepth--;
+    }];
+}
+
+static void SCFReapplyTrackedCandidateViews(void) {
+    NSArray<UIView *> *views = gSCFTrackedViews.allObjects;
+    [UIView performWithoutAnimation:^{
+        for (UIView *view in views) {
+            BOOL hasTrackedAncestor = NO;
+            UIView *ancestor = view.superview;
+            for (NSUInteger depth = 0; ancestor && depth < 24; depth++) {
+                if ([gSCFTrackedViews containsObject:ancestor]) {
+                    hasTrackedAncestor = YES;
+                    break;
+                }
+                ancestor = ancestor.superview;
+            }
+            if (hasTrackedAncestor) continue;
+            SCFApplyToCandidateSurface(view);
+        }
+    }];
+}
+
+static void SCFScheduleCandidateStateMonitor(void) {
+    if (!gSCFCandidateMonitorRunning) return;
+
+    BOOL active = SCFSpotlightIsForeground();
+    if (!gSCFCandidateMonitorHasState ||
+        active != gSCFCandidateMonitorLastActive) {
+        gSCFCandidateMonitorHasState = YES;
+        gSCFCandidateMonitorLastActive = active;
+        if (active) {
+            SCFReapplyTrackedCandidateViews();
+        } else {
+            SCFRestoreTrackedCandidateViews();
+        }
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        SCFScheduleCandidateStateMonitor();
+    });
+}
+
+static void SCFStartCandidateStateMonitor(void) {
+    if (gSCFCandidateMonitorRunning) return;
+    gSCFCandidateMonitorRunning = YES;
+    gSCFCandidateMonitorHasState = YES;
+    gSCFCandidateMonitorLastActive = SCFSpotlightIsForeground();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        SCFScheduleCandidateStateMonitor();
+    });
 }
 
 // UIKit rebuilds parts of the candidate strip after layout.  Repairing it
@@ -334,7 +515,18 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 %hook UIView
 
 - (void)setBackgroundColor:(UIColor *)color {
+    if (gSCFInternalMutationDepth > 0) {
+        %orig;
+        return;
+    }
+    SCFOriginalViewState *trackedState =
+        objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+    if (trackedState) trackedState.backgroundColor = color;
     if (SCFShouldSuppressBackground(self, color)) {
+        SCFRememberOriginalState(self);
+        SCFOriginalViewState *state =
+            objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+        state.backgroundColor = color;
         %orig(SCFTargetColor());
         return;
     }
@@ -342,7 +534,18 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 }
 
 - (void)setOpaque:(BOOL)opaque {
+    if (gSCFInternalMutationDepth > 0) {
+        %orig;
+        return;
+    }
+    SCFOriginalViewState *trackedState =
+        objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+    if (trackedState) trackedState.opaque = opaque;
     if (opaque && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
+        SCFRememberOriginalState(self);
+        SCFOriginalViewState *state =
+            objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+        state.opaque = opaque;
         %orig(NO);
         return;
     }
@@ -365,7 +568,22 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 %hook UIVisualEffectView
 
 - (void)setEffect:(UIVisualEffect *)effect {
+    if (gSCFInternalMutationDepth > 0) {
+        %orig;
+        return;
+    }
+    SCFOriginalViewState *trackedState =
+        objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+    if (trackedState) {
+        trackedState.isEffectView = YES;
+        trackedState.effect = effect;
+    }
     if (effect && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
+        SCFRememberOriginalState(self);
+        SCFOriginalViewState *state =
+            objc_getAssociatedObject(self, kSCFOriginalViewStateKey);
+        state.isEffectView = YES;
+        state.effect = effect;
         %orig(nil);
         return;
     }
@@ -389,4 +607,3 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         });
     }
 }
-
