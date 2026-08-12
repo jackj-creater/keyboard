@@ -29,6 +29,7 @@ static const uint64_t kSCFStateMagic = 0x5343460000000000ULL;
 static const uint64_t kSCFStateMagicMask = 0xFFFFFF0000000000ULL;
 static const uint64_t kSCFStateProcessMask = 0x000000FFFFFFFFFEULL;
 static BOOL gSCFIsSpotlightProcess = NO;
+static BOOL gSCFIsInputUIProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
 static CFTimeInterval gSCFLastStateCheck = 0.0;
 static BOOL gSCFCachedActive = NO;
@@ -59,15 +60,25 @@ static void SCFWriteSpotlightState(BOOL active) {
 }
 
 static BOOL SCFSpotlightIsForeground(void) {
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - gSCFLastStateCheck < 0.05) return gSCFCachedActive;
-    gSCFLastStateCheck = now;
-
     SCFEnsureStateToken();
     if (gSCFStateToken == NOTIFY_TOKEN_INVALID) {
         gSCFCachedActive = NO;
         return NO;
     }
+
+    // InputUI owns the shared candidate views.  A check token lets it notice
+    // Spotlight's foreground event before the first candidate-layout frame,
+    // without a callback, a timer, or a view-tree scan.
+    if (gSCFIsInputUIProcess) {
+        int changed = 0;
+        if (notify_check(gSCFStateToken, &changed) == NOTIFY_STATUS_OK && changed) {
+            gSCFLastStateCheck = 0.0;
+        }
+    }
+
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gSCFLastStateCheck < 0.05) return gSCFCachedActive;
+    gSCFLastStateCheck = now;
 
     uint64_t state = 0;
     if (notify_get_state(gSCFStateToken, &state) != NOTIFY_STATUS_OK ||
@@ -440,6 +451,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     const char *name = strrchr(executablePath, '/');
     name = name ? name + 1 : executablePath;
     gSCFIsSpotlightProcess = strcmp(name, "Spotlight") == 0;
+    gSCFIsInputUIProcess = strcmp(name, "InputUI") == 0;
     if (gSCFIsSpotlightProcess) {
         dispatch_async(dispatch_get_main_queue(), ^{
             SCFInstallSpotlightStateObservers();
