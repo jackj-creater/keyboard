@@ -31,15 +31,17 @@ static const uint64_t kSCFStateProcessMask = 0x000000FFFFFFFFFEULL;
 static BOOL gSCFIsSpotlightProcess = NO;
 static BOOL gSCFIsInputUIProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
-static CFTimeInterval gSCFLastProcessValidation = 0.0;
 static BOOL gSCFHasReadState = NO;
 static BOOL gSCFCachedActive = NO;
 static uint64_t gSCFStateGeneration = 0;
 static uint64_t gSCFLastLayoutRepairGeneration = ~0ULL;
 static NSUInteger gSCFInternalRepairDepth = 0;
-static id gSCFWillResignActiveObserver = nil;
+static __weak UITextField *gSCFActiveSpotlightField = nil;
+static id gSCFDidBecomeActiveObserver = nil;
+static id gSCFWillEnterForegroundObserver = nil;
 static id gSCFDidEnterBackgroundObserver = nil;
-static id gSCFSceneWillDeactivateObserver = nil;
+static id gSCFSceneDidActivateObserver = nil;
+static id gSCFSceneWillEnterForegroundObserver = nil;
 
 static void SCFEnsureStateToken(void) {
     if (gSCFStateToken != NOTIFY_TOKEN_INVALID) return;
@@ -88,24 +90,10 @@ static BOOL SCFSpotlightIsForeground(void) {
         BOOL previous = gSCFCachedActive;
         gSCFCachedActive = SCFReadPublishedSpotlightState();
         gSCFHasReadState = YES;
-        gSCFLastProcessValidation = CACurrentMediaTime();
-        if (firstRead || previous != gSCFCachedActive) {
+        if (firstRead || stateChanged || previous != gSCFCachedActive) {
             gSCFStateGeneration++;
         }
         return gSCFCachedActive;
-    }
-
-    // This is only a stale-state safety net for an abnormal Spotlight exit;
-    // normal transitions are handled entirely by notify_check above.
-    if (gSCFCachedActive) {
-        CFTimeInterval now = CACurrentMediaTime();
-        if (now - gSCFLastProcessValidation >= 1.0) {
-            gSCFLastProcessValidation = now;
-            if (!SCFReadPublishedSpotlightState()) {
-                gSCFCachedActive = NO;
-                gSCFStateGeneration++;
-            }
-        }
     }
     return gSCFCachedActive;
 }
@@ -116,11 +104,17 @@ static void SCFInstallSpotlightStateObservers(void) {
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     NSOperationQueue *mainQueue = NSOperationQueue.mainQueue;
 
-    gSCFWillResignActiveObserver =
-        [center addObserverForName:UIApplicationWillResignActiveNotification
+    gSCFDidBecomeActiveObserver =
+        [center addObserverForName:UIApplicationDidBecomeActiveNotification
                            object:nil queue:mainQueue
                        usingBlock:^(__unused NSNotification *note) {
-            SCFWriteSpotlightState(NO);
+            SCFWriteSpotlightState(YES);
+        }];
+    gSCFWillEnterForegroundObserver =
+        [center addObserverForName:UIApplicationWillEnterForegroundNotification
+                           object:nil queue:mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            SCFWriteSpotlightState(YES);
         }];
     gSCFDidEnterBackgroundObserver =
         [center addObserverForName:UIApplicationDidEnterBackgroundNotification
@@ -130,13 +124,20 @@ static void SCFInstallSpotlightStateObservers(void) {
         }];
 
     if (@available(iOS 13.0, *)) {
-        gSCFSceneWillDeactivateObserver =
-            [center addObserverForName:UISceneWillDeactivateNotification
+        gSCFSceneDidActivateObserver =
+            [center addObserverForName:UISceneDidActivateNotification
                                object:nil queue:mainQueue
                            usingBlock:^(__unused NSNotification *note) {
-                SCFWriteSpotlightState(NO);
+                SCFWriteSpotlightState(YES);
+            }];
+        gSCFSceneWillEnterForegroundObserver =
+            [center addObserverForName:UISceneWillEnterForegroundNotification
+                               object:nil queue:mainQueue
+                           usingBlock:^(__unused NSNotification *note) {
+                SCFWriteSpotlightState(YES);
             }];
     }
+
 }
 
 #pragma mark - Class and context helpers
@@ -423,13 +424,20 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     // keyboard.  This avoids the late scene-activation event after unlock.
     SCFWriteSpotlightState(YES);
     BOOL result = %orig;
-    if (!result) SCFWriteSpotlightState(NO);
+    if (result) {
+        gSCFActiveSpotlightField = self;
+    } else if (!gSCFActiveSpotlightField) {
+        SCFWriteSpotlightState(NO);
+    }
     return result;
 }
 
 - (BOOL)resignFirstResponder {
     BOOL result = %orig;
-    if (result) SCFWriteSpotlightState(NO);
+    if (result && gSCFActiveSpotlightField == self) {
+        gSCFActiveSpotlightField = nil;
+        SCFWriteSpotlightState(NO);
+    }
     return result;
 }
 
