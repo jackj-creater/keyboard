@@ -29,6 +29,7 @@ static const uint64_t kSCFStateMagic = 0x5343460000000000ULL;
 static const uint64_t kSCFStateMagicMask = 0xFFFFFF0000000000ULL;
 static const uint64_t kSCFStateProcessMask = 0x000000FFFFFFFFFEULL;
 static BOOL gSCFIsSpotlightProcess = NO;
+static BOOL gSCFIsInputUIProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
 static CFTimeInterval gSCFLastStateCheck = 0.0;
 static BOOL gSCFCachedActive = NO;
@@ -66,11 +67,16 @@ static BOOL SCFSpotlightIsForeground(void) {
         return NO;
     }
 
-    // This function is reached by global UIKit setters.  During the first
-    // keyboard layout after unlock that can mean hundreds of calls in one
-    // frame, so all notify-server work must stay behind the time cache.
-    // A stale value can live for at most 50 ms; after a lock/unlock cycle the
-    // cache is already old and the first call refreshes it immediately.
+    // InputUI owns the shared candidate views.  A check token lets it notice
+    // Spotlight's foreground event before the first candidate-layout frame,
+    // without a callback, a timer, or a view-tree scan.
+    if (gSCFIsInputUIProcess) {
+        int changed = 0;
+        if (notify_check(gSCFStateToken, &changed) == NOTIFY_STATUS_OK && changed) {
+            gSCFLastStateCheck = 0.0;
+        }
+    }
+
     CFTimeInterval now = CACurrentMediaTime();
     if (now - gSCFLastStateCheck < 0.05) return gSCFCachedActive;
     gSCFLastStateCheck = now;
@@ -198,6 +204,17 @@ static const char *const kSCFCandidateKeywords[] = {
     "uikbbackdrop", "uikbinputbackdrop", "inputsethost", "keyboarddock"
 };
 
+static BOOL SCFViewClassIsCandidateSurface(UIView *view) {
+    static const char *const layoutKeywords[] = {
+        "candidate", "prediction", "completion", "suggestion",
+        "autocorrection", "alternative", "proactive", "inline"
+    };
+    return view && SCFClassNameContainsAny(
+        view,
+        layoutKeywords,
+        sizeof(layoutKeywords) / sizeof(layoutKeywords[0]));
+}
+
 static BOOL SCFViewOrAncestorMatches(UIView *view,
                                      const char *const *keywords,
                                      size_t keywordCount,
@@ -226,86 +243,6 @@ static BOOL SCFFrameCanBeCandidateSurface(UIView *view) {
 
     CGFloat screenHeight = CGRectGetHeight(UIScreen.mainScreen.bounds);
     return height < screenHeight * 0.70;
-}
-
-static BOOL SCFStringLooksLikeExpandControl(NSString *value) {
-    if (value.length == 0) return NO;
-    NSString *text = value.lowercaseString;
-    static NSArray<NSString *> *needles;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        needles = @[
-            @"expand", @"collapse", @"chevron", @"arrow", @"more candidates",
-            @"show candidates", @"hide candidates",
-            @"\u5c55\u5f00", @"\u6536\u8d77", @"\u66f4\u591a\u5019\u9009"
-        ];
-    });
-    for (NSString *needle in needles) {
-        if ([text containsString:needle]) return YES;
-    }
-    return NO;
-}
-
-static BOOL SCFViewHasExpandSemantics(UIView *view) {
-    static const char *const expandKeywords[] = {
-        "expand", "collapse", "chevron", "arrow", "morebutton",
-        "candidatebutton", "candidatebarbutton"
-    };
-    if (SCFClassNameContainsAny(
-            view, expandKeywords,
-            sizeof(expandKeywords) / sizeof(expandKeywords[0]))) return YES;
-
-    return SCFStringLooksLikeExpandControl(view.accessibilityIdentifier) ||
-        SCFStringLooksLikeExpandControl(view.accessibilityLabel) ||
-        SCFStringLooksLikeExpandControl(view.accessibilityHint);
-}
-
-static BOOL SCFViewHasTrailingButtonGeometry(UIView *view) {
-    if (!view.window || !SCFViewIsCandidateSurface(view)) return NO;
-
-    CGRect rect = [view convertRect:view.bounds toView:view.window];
-    CGFloat width = CGRectGetWidth(rect);
-    CGFloat height = CGRectGetHeight(rect);
-    if (width < 24.0 || height < 24.0 || width > 104.0 || height > 104.0) return NO;
-    CGFloat ratio = width / height;
-    if (ratio < 0.55 || ratio > 1.85) return NO;
-
-    CGFloat windowWidth = CGRectGetWidth(view.window.bounds);
-    CGFloat trailingGap = windowWidth - CGRectGetMaxX(rect);
-    return trailingGap >= -4.0 && trailingGap <= MAX(20.0, windowWidth * 0.04);
-}
-
-static BOOL SCFViewIsExpandControl(UIView *view) {
-    if (!view || !view.window || !SCFViewIsCandidateSurface(view)) return NO;
-    if (SCFViewHasExpandSemantics(view)) return YES;
-
-    // The private iOS 17 class does not always expose an accessibility label.
-    // In that case the expand control is the compact UIControl at the trailing
-    // edge of the candidate bar. Candidate cells are not UIControls.
-    return [view isKindOfClass:UIControl.class] &&
-        SCFViewHasTrailingButtonGeometry(view);
-}
-
-static UIView *SCFFindExpandControl(UIView *view) {
-    UIView *current = view;
-    for (NSUInteger depth = 0; current && depth <= 6; depth++) {
-        if (SCFViewIsExpandControl(current)) return current;
-        current = current.superview;
-    }
-    return nil;
-}
-
-static UIView *SCFExpandRepairRoot(UIView *control) {
-    UIView *root = control;
-    for (NSUInteger depth = 0; root.superview && depth < 4; depth++) {
-        UIView *parent = root.superview;
-        CGFloat width = CGRectGetWidth(parent.bounds);
-        CGFloat height = CGRectGetHeight(parent.bounds);
-        if (width < 20.0 || height < 20.0 || width > 112.0 || height > 112.0) break;
-        if (!SCFViewIsCandidateSurface(parent)) break;
-        root = parent;
-    }
-    return root;
 }
 
 #pragma mark - Background repair
@@ -480,23 +417,23 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
 
 static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFSpotlightIsForeground()) return;
-    UIView *control = SCFFindExpandControl(view);
-    if (!control) return;
-    UIView *root = SCFExpandRepairRoot(control);
-    if (!root.window || !SCFFrameCanBeCandidateSurface(root)) return;
+    if (!view.window || !SCFViewIsCandidateSurface(view)) return;
+    if (!SCFFrameCanBeCandidateSurface(view)) return;
 
     UIColor *target = SCFTargetColor();
     gSCFInternalRepairDepth++;
-    SCFRepairCandidateTree(root, target, 0);
+    SCFRepairCandidateTree(view, target, 0);
     gSCFInternalRepairDepth--;
 }
 
-// UIKit rebuilds the expand control after layout, so keep suppressing dark
-// backgrounds only inside that compact control hierarchy. The candidate bar
-// and expanded candidate grid deliberately retain their system appearance.
+// UIKit rebuilds parts of the candidate strip after layout.  Repairing it
+// only once is therefore not enough: it can put a black colour/effect back
+// on the expand button or candidate grid on the following run-loop turn.
+// These helpers are deliberately limited to views in a candidate hierarchy;
+// regular keyboard keys and every other SpringBoard view are left untouched.
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     return SCFSpotlightIsForeground() && view && color &&
-        SCFFindExpandControl(view) != nil &&
+        SCFViewIsCandidateSurface(view) &&
         SCFColorLooksDark(color, view.traitCollection);
 }
 
@@ -521,7 +458,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (opaque && SCFSpotlightIsForeground() && SCFFindExpandControl(self)) {
+    if (opaque && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(NO);
         return;
     }
@@ -530,14 +467,17 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window || !SCFFindExpandControl(self)) return;
+    if (!self.window || !SCFViewIsCandidateSurface(self)) return;
     SCFApplyToCandidateSurface(self);
 }
 
 - (void)layoutSubviews {
     %orig;
     if (!self.window || self.hidden || self.alpha < 0.01) return;
-    if (SCFViewIsExpandControl(self)) SCFApplyToCandidateSurface(self);
+    // During the pull-down animation every descendant lays out.  Scanning
+    // only actual candidate container classes avoids recursively walking the
+    // same tree once per child while preserving the full repair below it.
+    if (SCFViewClassIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
 }
 
 %end
@@ -549,7 +489,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (effect && SCFSpotlightIsForeground() && SCFFindExpandControl(self)) {
+    if (effect && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(nil);
         return;
     }
@@ -567,6 +507,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     const char *name = strrchr(executablePath, '/');
     name = name ? name + 1 : executablePath;
     gSCFIsSpotlightProcess = strcmp(name, "Spotlight") == 0;
+    gSCFIsInputUIProcess = strcmp(name, "InputUI") == 0;
     if (gSCFIsSpotlightProcess) {
         dispatch_async(dispatch_get_main_queue(), ^{
             SCFInstallSpotlightStateObservers();
