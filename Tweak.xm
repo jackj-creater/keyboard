@@ -204,17 +204,6 @@ static const char *const kSCFCandidateKeywords[] = {
     "uikbbackdrop", "uikbinputbackdrop", "inputsethost", "keyboarddock"
 };
 
-static BOOL SCFViewClassIsCandidateSurface(UIView *view) {
-    static const char *const layoutKeywords[] = {
-        "candidate", "prediction", "completion", "suggestion",
-        "autocorrection", "alternative", "proactive", "inline"
-    };
-    return view && SCFClassNameContainsAny(
-        view,
-        layoutKeywords,
-        sizeof(layoutKeywords) / sizeof(layoutKeywords[0]));
-}
-
 static BOOL SCFViewOrAncestorMatches(UIView *view,
                                      const char *const *keywords,
                                      size_t keywordCount,
@@ -234,6 +223,54 @@ static BOOL SCFViewIsCandidateSurface(UIView *view) {
         kSCFCandidateKeywords,
         sizeof(kSCFCandidateKeywords) / sizeof(kSCFCandidateKeywords[0]),
         16);
+}
+
+static BOOL SCFViewIsStrictCandidateSurface(UIView *view) {
+    static const char *const strictKeywords[] = {
+        "candidate", "prediction", "completion", "suggestion",
+        "autocorrection", "alternative", "proactive", "inline"
+    };
+    return view && SCFViewOrAncestorMatches(
+        view,
+        strictKeywords,
+        sizeof(strictKeywords) / sizeof(strictKeywords[0]),
+        12);
+}
+
+static BOOL SCFViewContainsImage(UIView *view, NSUInteger depth) {
+    if (!view || depth > 3) return NO;
+    if ([view isKindOfClass:UIImageView.class] &&
+        ((UIImageView *)view).image != nil) return YES;
+    for (UIView *subview in view.subviews) {
+        if (SCFViewContainsImage(subview, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+static BOOL SCFButtonLooksLikeCandidateToggle(UIButton *button) {
+    if (!button || !button.window || !SCFViewIsStrictCandidateSurface(button)) return NO;
+    if ([button titleForState:UIControlStateNormal].length > 0) return NO;
+
+    CGFloat width = CGRectGetWidth(button.bounds);
+    CGFloat height = CGRectGetHeight(button.bounds);
+    if (width < 20.0 || height < 20.0 || width > 110.0 || height > 110.0) return NO;
+    CGFloat ratio = width / height;
+    if (ratio < 0.45 || ratio > 2.20) return NO;
+
+    return [button imageForState:UIControlStateNormal] != nil ||
+        SCFViewContainsImage(button, 0);
+}
+
+static UIButton *SCFCandidateToggleForView(UIView *view) {
+    UIView *current = view;
+    for (NSUInteger depth = 0; current && depth <= 5; depth++) {
+        if ([current isKindOfClass:UIButton.class] &&
+            SCFButtonLooksLikeCandidateToggle((UIButton *)current)) {
+            return (UIButton *)current;
+        }
+        current = current.superview;
+    }
+    return nil;
 }
 
 static BOOL SCFFrameCanBeCandidateSurface(UIView *view) {
@@ -417,12 +454,12 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
 
 static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFSpotlightIsForeground()) return;
-    if (!view.window || !SCFViewIsCandidateSurface(view)) return;
-    if (!SCFFrameCanBeCandidateSurface(view)) return;
+    UIButton *button = SCFCandidateToggleForView(view);
+    if (!button || !SCFFrameCanBeCandidateSurface(button)) return;
 
     UIColor *target = SCFTargetColor();
     gSCFInternalRepairDepth++;
-    SCFRepairCandidateTree(view, target, 0);
+    SCFRepairCandidateTree(button, target, 0);
     gSCFInternalRepairDepth--;
 }
 
@@ -432,14 +469,15 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 // These helpers are deliberately limited to views in a candidate hierarchy;
 // regular keyboard keys and every other SpringBoard view are left untouched.
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
-    return SCFSpotlightIsForeground() && view && color &&
-        SCFViewIsCandidateSurface(view) &&
+    return view && color &&
+        SCFCandidateToggleForView(view) != nil &&
+        SCFSpotlightIsForeground() &&
         SCFColorLooksDark(color, view.traitCollection);
 }
 
 #pragma mark - Hook and Spotlight editing state
 
-%hook UIView
+%hook UIButton
 
 - (void)setBackgroundColor:(UIColor *)color {
     if (gSCFInternalRepairDepth > 0) {
@@ -458,7 +496,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (opaque && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
+    if (opaque && SCFCandidateToggleForView(self) && SCFSpotlightIsForeground()) {
         %orig(NO);
         return;
     }
@@ -467,17 +505,18 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window || !SCFViewIsCandidateSurface(self)) return;
-    SCFApplyToCandidateSurface(self);
+    if (!self.window) return;
+    if (SCFButtonLooksLikeCandidateToggle(self)) {
+        SCFApplyToCandidateSurface(self);
+    }
 }
 
 - (void)layoutSubviews {
     %orig;
     if (!self.window || self.hidden || self.alpha < 0.01) return;
-    // During the pull-down animation every descendant lays out.  Scanning
-    // only actual candidate container classes avoids recursively walking the
-    // same tree once per child while preserving the full repair below it.
-    if (SCFViewClassIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
+    if (SCFButtonLooksLikeCandidateToggle(self)) {
+        SCFApplyToCandidateSurface(self);
+    }
 }
 
 %end
@@ -489,7 +528,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (effect && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
+    if (effect && SCFCandidateToggleForView(self) && SCFSpotlightIsForeground()) {
         %orig(nil);
         return;
     }
