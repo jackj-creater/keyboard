@@ -237,19 +237,17 @@ static BOOL SCFViewIsStrictCandidateSurface(UIView *view) {
         12);
 }
 
-static BOOL SCFViewContainsImage(UIView *view, NSUInteger depth) {
-    if (!view || depth > 3) return NO;
-    if ([view isKindOfClass:UIImageView.class] &&
-        ((UIImageView *)view).image != nil) return YES;
-    for (UIView *subview in view.subviews) {
-        if (SCFViewContainsImage(subview, depth + 1)) return YES;
-    }
-    return NO;
-}
-
 static BOOL SCFButtonLooksLikeCandidateToggle(UIButton *button) {
     if (!button || !button.window || !SCFViewIsStrictCandidateSurface(button)) return NO;
     if ([button titleForState:UIControlStateNormal].length > 0) return NO;
+
+    // UIKeyboard creates the toggle before assigning its chevron image on
+    // the first presentation. Requiring currentImage here makes the initial
+    // Spotlight pull-down miss the button; after one expand/collapse cycle
+    // the image exists and the same button starts matching. Candidate cells
+    // are not UIButtons, so an untitled compact button in the strict candidate
+    // hierarchy is the stable early-life identity we need.
+    if (SCFCStringContainsInsensitive(SCFClassName(button), "log")) return NO;
 
     CGFloat width = CGRectGetWidth(button.bounds);
     CGFloat height = CGRectGetHeight(button.bounds);
@@ -257,8 +255,7 @@ static BOOL SCFButtonLooksLikeCandidateToggle(UIButton *button) {
     CGFloat ratio = width / height;
     if (ratio < 0.45 || ratio > 2.20) return NO;
 
-    return [button imageForState:UIControlStateNormal] != nil ||
-        SCFViewContainsImage(button, 0);
+    return YES;
 }
 
 static UIButton *SCFCandidateToggleForView(UIView *view) {
