@@ -198,17 +198,6 @@ static const char *const kSCFCandidateKeywords[] = {
     "uikbbackdrop", "uikbinputbackdrop", "inputsethost", "keyboarddock"
 };
 
-static BOOL SCFViewClassIsCandidateSurface(UIView *view) {
-    static const char *const layoutKeywords[] = {
-        "candidate", "prediction", "completion", "suggestion",
-        "autocorrection", "alternative", "proactive", "inline"
-    };
-    return view && SCFClassNameContainsAny(
-        view,
-        layoutKeywords,
-        sizeof(layoutKeywords) / sizeof(layoutKeywords[0]));
-}
-
 static BOOL SCFViewOrAncestorMatches(UIView *view,
                                      const char *const *keywords,
                                      size_t keywordCount,
