@@ -270,6 +270,27 @@ static UIButton *SCFCandidateToggleForView(UIView *view) {
     return nil;
 }
 
+static UIView *SCFCandidateToggleRepairRoot(UIButton *button) {
+    UIView *root = button;
+    CGFloat buttonWidth = CGRectGetWidth(button.bounds);
+    CGFloat buttonHeight = CGRectGetHeight(button.bounds);
+
+    // The black/grey material can live in a same-sized wrapper around the
+    // UIButton on its first presentation. Include only compact wrappers that
+    // closely match the verified toggle; never climb into the full candidate
+    // bar or the expanded candidate grid.
+    for (NSUInteger depth = 0; root.superview && depth < 3; depth++) {
+        UIView *parent = root.superview;
+        CGFloat width = CGRectGetWidth(parent.bounds);
+        CGFloat height = CGRectGetHeight(parent.bounds);
+        if (!SCFViewIsStrictCandidateSurface(parent)) break;
+        if (width < 16.0 || height < 16.0 || width > 120.0 || height > 120.0) break;
+        if (width > buttonWidth * 1.65 || height > buttonHeight * 1.65) break;
+        root = parent;
+    }
+    return root;
+}
+
 static BOOL SCFFrameCanBeCandidateSurface(UIView *view) {
     CGFloat width = CGRectGetWidth(view.bounds);
     CGFloat height = CGRectGetHeight(view.bounds);
@@ -453,11 +474,36 @@ static void SCFApplyToCandidateSurface(UIView *view) {
     if (!SCFSpotlightIsForeground()) return;
     UIButton *button = SCFCandidateToggleForView(view);
     if (!button || !SCFFrameCanBeCandidateSurface(button)) return;
+    UIView *root = SCFCandidateToggleRepairRoot(button);
 
     UIColor *target = SCFTargetColor();
     gSCFInternalRepairDepth++;
-    SCFRepairCandidateTree(button, target, 0);
+    SCFRepairCandidateTree(root, target, 0);
     gSCFInternalRepairDepth--;
+}
+
+static char kSCFRepairScheduledKey;
+
+static void SCFScheduleCandidateToggleRepair(UIButton *button) {
+    if (!SCFButtonLooksLikeCandidateToggle(button)) return;
+    if ([objc_getAssociatedObject(button, &kSCFRepairScheduledKey) boolValue]) return;
+
+    objc_setAssociatedObject(button, &kSCFRepairScheduledKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIButton *weakButton = button;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIButton *strongButton = weakButton;
+        if (strongButton && strongButton.window &&
+            SCFButtonLooksLikeCandidateToggle(strongButton)) {
+            // Keep the coalescing marker set while repairing so any layout
+            // caused by the colour change cannot enqueue a repair loop.
+            SCFApplyToCandidateSurface(strongButton);
+        }
+        if (strongButton) {
+            objc_setAssociatedObject(strongButton, &kSCFRepairScheduledKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    });
 }
 
 // UIKit rebuilds parts of the candidate strip after layout.  Repairing it
@@ -505,6 +551,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     if (!self.window) return;
     if (SCFButtonLooksLikeCandidateToggle(self)) {
         SCFApplyToCandidateSurface(self);
+        SCFScheduleCandidateToggleRepair(self);
     }
 }
 
@@ -513,6 +560,21 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     if (!self.window || self.hidden || self.alpha < 0.01) return;
     if (SCFButtonLooksLikeCandidateToggle(self)) {
         SCFApplyToCandidateSurface(self);
+        SCFScheduleCandidateToggleRepair(self);
+    }
+}
+
+- (void)didAddSubview:(UIView *)subview {
+    %orig;
+    if (self.window && SCFButtonLooksLikeCandidateToggle(self)) {
+        SCFScheduleCandidateToggleRepair(self);
+    }
+}
+
+- (void)setImage:(UIImage *)image forState:(UIControlState)state {
+    %orig;
+    if (self.window && SCFButtonLooksLikeCandidateToggle(self)) {
+        SCFScheduleCandidateToggleRepair(self);
     }
 }
 
