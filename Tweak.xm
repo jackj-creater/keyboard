@@ -31,11 +31,8 @@ static const uint64_t kSCFStateProcessMask = 0x000000FFFFFFFFFEULL;
 static BOOL gSCFIsSpotlightProcess = NO;
 static BOOL gSCFIsInputUIProcess = NO;
 static int gSCFStateToken = NOTIFY_TOKEN_INVALID;
-static CFTimeInterval gSCFLastProcessValidation = 0.0;
-static BOOL gSCFHasReadState = NO;
+static CFTimeInterval gSCFLastStateCheck = 0.0;
 static BOOL gSCFCachedActive = NO;
-static uint64_t gSCFStateGeneration = 0;
-static uint64_t gSCFLastLayoutRepairGeneration = ~0ULL;
 static NSUInteger gSCFInternalRepairDepth = 0;
 static id gSCFDidBecomeActiveObserver = nil;
 static id gSCFWillResignActiveObserver = nil;
@@ -63,20 +60,6 @@ static void SCFWriteSpotlightState(BOOL active) {
     notify_post(kSCFStateName);
 }
 
-static BOOL SCFReadPublishedSpotlightState(void) {
-    uint64_t state = 0;
-    if (notify_get_state(gSCFStateToken, &state) != NOTIFY_STATUS_OK ||
-        (state & kSCFStateMagicMask) != kSCFStateMagic ||
-        (state & 1ULL) == 0) {
-        return NO;
-    }
-
-    pid_t processID = (pid_t)((state & kSCFStateProcessMask) >> 1);
-    errno = 0;
-    int result = kill(processID, 0);
-    return result == 0 || errno == EPERM;
-}
-
 static BOOL SCFSpotlightIsForeground(void) {
     SCFEnsureStateToken();
     if (gSCFStateToken == NOTIFY_TOKEN_INVALID) {
@@ -84,33 +67,32 @@ static BOOL SCFSpotlightIsForeground(void) {
         return NO;
     }
 
-    int changed = 0;
-    BOOL stateChanged =
-        notify_check(gSCFStateToken, &changed) == NOTIFY_STATUS_OK && changed;
-    if (!gSCFHasReadState || stateChanged) {
-        BOOL firstRead = !gSCFHasReadState;
-        BOOL previous = gSCFCachedActive;
-        gSCFCachedActive = SCFReadPublishedSpotlightState();
-        gSCFHasReadState = YES;
-        gSCFLastProcessValidation = CACurrentMediaTime();
-        if (firstRead || previous != gSCFCachedActive) {
-            gSCFStateGeneration++;
+    // InputUI owns the shared candidate views.  A check token lets it notice
+    // Spotlight's foreground event before the first candidate-layout frame,
+    // without a callback, a timer, or a view-tree scan.
+    if (gSCFIsInputUIProcess) {
+        int changed = 0;
+        if (notify_check(gSCFStateToken, &changed) == NOTIFY_STATUS_OK && changed) {
+            gSCFLastStateCheck = 0.0;
         }
-        return gSCFCachedActive;
     }
 
-    // This is only a stale-state safety net for an abnormal Spotlight exit;
-    // normal transitions are handled entirely by notify_check above.
-    if (gSCFCachedActive) {
-        CFTimeInterval now = CACurrentMediaTime();
-        if (now - gSCFLastProcessValidation >= 1.0) {
-            gSCFLastProcessValidation = now;
-            if (!SCFReadPublishedSpotlightState()) {
-                gSCFCachedActive = NO;
-                gSCFStateGeneration++;
-            }
-        }
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gSCFLastStateCheck < 0.05) return gSCFCachedActive;
+    gSCFLastStateCheck = now;
+
+    uint64_t state = 0;
+    if (notify_get_state(gSCFStateToken, &state) != NOTIFY_STATUS_OK ||
+        (state & kSCFStateMagicMask) != kSCFStateMagic ||
+        (state & 1ULL) == 0) {
+        gSCFCachedActive = NO;
+        return NO;
     }
+
+    pid_t processID = (pid_t)((state & kSCFStateProcessMask) >> 1);
+    errno = 0;
+    int result = kill(processID, 0);
+    gSCFCachedActive = result == 0 || errno == EPERM;
     return gSCFCachedActive;
 }
 
@@ -179,14 +161,7 @@ static void SCFInstallSpotlightStateObservers(void) {
             }];
     }
 
-    // During the first frame after unlock, UIKit may still report the scene
-    // as inactive even though the search field has already requested the
-    // keyboard and published YES.  Never overwrite that early YES with a
-    // false initialization result; real background/deactivation events still
-    // publish NO through the observers above.
-    if (SCFSpotlightSceneIsForeground()) {
-        SCFWriteSpotlightState(YES);
-    }
+    SCFWriteSpotlightState(SCFSpotlightSceneIsForeground());
 }
 
 #pragma mark - Class and context helpers
@@ -229,15 +204,15 @@ static const char *const kSCFCandidateKeywords[] = {
     "uikbbackdrop", "uikbinputbackdrop", "inputsethost", "keyboarddock"
 };
 
-static BOOL SCFViewClassIsCandidateContainer(UIView *view) {
-    static const char *const containerKeywords[] = {
+static BOOL SCFViewClassIsCandidateSurface(UIView *view) {
+    static const char *const layoutKeywords[] = {
         "candidate", "prediction", "completion", "suggestion",
         "autocorrection", "alternative", "proactive", "inline"
     };
     return view && SCFClassNameContainsAny(
         view,
-        containerKeywords,
-        sizeof(containerKeywords) / sizeof(containerKeywords[0]));
+        layoutKeywords,
+        sizeof(layoutKeywords) / sizeof(layoutKeywords[0]));
 }
 
 static BOOL SCFViewOrAncestorMatches(UIView *view,
@@ -441,9 +416,9 @@ static NSUInteger SCFRepairCandidateTree(UIView *view,
 }
 
 static void SCFApplyToCandidateSurface(UIView *view) {
+    if (!SCFSpotlightIsForeground()) return;
     if (!view.window || !SCFViewIsCandidateSurface(view)) return;
     if (!SCFFrameCanBeCandidateSurface(view)) return;
-    if (!SCFSpotlightIsForeground()) return;
 
     UIColor *target = SCFTargetColor();
     gSCFInternalRepairDepth++;
@@ -457,32 +432,12 @@ static void SCFApplyToCandidateSurface(UIView *view) {
 // These helpers are deliberately limited to views in a candidate hierarchy;
 // regular keyboard keys and every other SpringBoard view are left untouched.
 static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
-    return view && color && SCFViewIsCandidateSurface(view) &&
-        SCFColorLooksDark(color, view.traitCollection) &&
-        SCFSpotlightIsForeground();
+    return SCFSpotlightIsForeground() && view && color &&
+        SCFViewIsCandidateSurface(view) &&
+        SCFColorLooksDark(color, view.traitCollection);
 }
 
 #pragma mark - Hook and Spotlight editing state
-
-%group SCFSpotlightHooks
-
-%hook UITextField
-
-- (BOOL)becomeFirstResponder {
-    // Publish synchronously before UIKit asks InputUI to present the shared
-    // keyboard.  This avoids the late scene-activation event after unlock.
-    SCFWriteSpotlightState(YES);
-    BOOL result = %orig;
-    // Do not publish a negative state here.  iOS 17 Spotlight can hand
-    // first-responder ownership between private fields while presenting.
-    return result;
-}
-
-%end
-
-%end
-
-%group SCFInputUIHooks
 
 %hook UIView
 
@@ -503,7 +458,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (opaque && SCFViewIsCandidateSurface(self) && SCFSpotlightIsForeground()) {
+    if (opaque && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(NO);
         return;
     }
@@ -512,18 +467,17 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window || !SCFViewClassIsCandidateContainer(self)) return;
+    if (!self.window || !SCFViewIsCandidateSurface(self)) return;
     SCFApplyToCandidateSurface(self);
 }
 
 - (void)layoutSubviews {
     %orig;
     if (!self.window || self.hidden || self.alpha < 0.01) return;
-    if (!SCFViewClassIsCandidateContainer(self)) return;
-    if (!SCFSpotlightIsForeground()) return;
-    if (gSCFLastLayoutRepairGeneration == gSCFStateGeneration) return;
-    gSCFLastLayoutRepairGeneration = gSCFStateGeneration;
-    SCFApplyToCandidateSurface(self);
+    // During the pull-down animation every descendant lays out.  Scanning
+    // only actual candidate container classes avoids recursively walking the
+    // same tree once per child while preserving the full repair below it.
+    if (SCFViewClassIsCandidateSurface(self)) SCFApplyToCandidateSurface(self);
 }
 
 %end
@@ -535,14 +489,12 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
         %orig;
         return;
     }
-    if (effect && SCFViewIsCandidateSurface(self) && SCFSpotlightIsForeground()) {
+    if (effect && SCFSpotlightIsForeground() && SCFViewIsCandidateSurface(self)) {
         %orig(nil);
         return;
     }
     %orig;
 }
-
-%end
 
 %end
 
@@ -556,11 +508,7 @@ static BOOL SCFShouldSuppressBackground(UIView *view, UIColor *color) {
     name = name ? name + 1 : executablePath;
     gSCFIsSpotlightProcess = strcmp(name, "Spotlight") == 0;
     gSCFIsInputUIProcess = strcmp(name, "InputUI") == 0;
-    if (gSCFIsInputUIProcess) {
-        %init(SCFInputUIHooks);
-    }
     if (gSCFIsSpotlightProcess) {
-        %init(SCFSpotlightHooks);
         dispatch_async(dispatch_get_main_queue(), ^{
             SCFInstallSpotlightStateObservers();
         });
