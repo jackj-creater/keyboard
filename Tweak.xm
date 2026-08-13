@@ -179,7 +179,14 @@ static void SCFInstallSpotlightStateObservers(void) {
             }];
     }
 
-    SCFWriteSpotlightState(SCFSpotlightSceneIsForeground());
+    // During the first frame after unlock, UIKit may still report the scene
+    // as inactive even though the search field has already requested the
+    // keyboard and published YES.  Never overwrite that early YES with a
+    // false initialization result; real background/deactivation events still
+    // publish NO through the observers above.
+    if (SCFSpotlightSceneIsForeground()) {
+        SCFWriteSpotlightState(YES);
+    }
 }
 
 #pragma mark - Class and context helpers
